@@ -91,6 +91,10 @@ export default function MainLayout() {
           }}
         />
         <Tabs.Screen
+          name="account"
+          options={{ href: null, title: "Mi cuenta" }}
+        />
+        <Tabs.Screen
           name="profile"
           options={{ href: null, title: "Perfil" }}
         />
