@@ -3,17 +3,30 @@
 // straight to LiveKit. Only this file knows about the SDK.
 import { DisconnectReason, Room, RoomEvent, Track, VideoPresets } from "livekit-client"
 import type { Participant, RemoteTrack } from "livekit-client"
-import { CameraError, MicrophoneError, VoiceAbortedError } from "./voiceRoom.types"
-import type { VoiceRoomEvents, VoiceRoomHandle, VoiceRoomParticipant, VoiceVideoTrack } from "./voiceRoom.types"
+import { CameraError, MicrophoneError, ScreenShareCancelledError, VoiceAbortedError } from "./voiceRoom.types"
+import type { VoiceAudioTrack, VoiceRoomEvents, VoiceRoomHandle, VoiceRoomParticipant, VoiceVideoTrack } from "./voiceRoom.types"
 
 export * from "./voiceRoom.types"
 
 export const voiceSupported: boolean =
   typeof window !== "undefined" && typeof navigator !== "undefined" && !!navigator.mediaDevices
 
+export const screenShareSupported: boolean =
+  typeof navigator !== "undefined" && typeof navigator.mediaDevices?.getDisplayMedia === "function"
+
 function cameraTrack(participant: Participant): VoiceVideoTrack | null {
   const track = participant.getTrackPublication(Track.Source.Camera)?.track
   return track ? (track as unknown as VoiceVideoTrack) : null
+}
+
+function screenTrack(participant: Participant): VoiceVideoTrack | null {
+  const track = participant.getTrackPublication(Track.Source.ScreenShare)?.track
+  return track ? (track as unknown as VoiceVideoTrack) : null
+}
+
+function microphoneTrack(participant: Participant): VoiceAudioTrack | null {
+  const track = participant.getTrackPublication(Track.Source.Microphone)?.track
+  return track ? (track as unknown as VoiceAudioTrack) : null
 }
 
 function snapshot(room: Room): VoiceRoomParticipant[] {
@@ -26,6 +39,8 @@ function snapshot(room: Room): VoiceRoomParticipant[] {
       camEnabled: local.isCameraEnabled,
       speaking: local.isSpeaking,
       videoTrack: cameraTrack(local),
+      screenTrack: screenTrack(local),
+      audioTrack: microphoneTrack(local),
     },
   ]
   room.remoteParticipants.forEach((p) => {
@@ -36,6 +51,8 @@ function snapshot(room: Room): VoiceRoomParticipant[] {
       camEnabled: p.isCameraEnabled,
       speaking: p.isSpeaking,
       videoTrack: cameraTrack(p),
+      screenTrack: screenTrack(p),
+      audioTrack: microphoneTrack(p),
     })
   })
   return list
@@ -186,5 +203,21 @@ export async function connectVoiceRoom(
   }
 
   emit()
-  return { disconnect, setMicEnabled, setCameraEnabled }
+  const setParticipantMuted = (identity: string, muted: boolean) => {
+    room.remoteParticipants.get(identity)?.setVolume(muted ? 0 : 1, Track.Source.Microphone)
+  }
+
+  const setScreenShareEnabled = async (enabled: boolean) => {
+    try {
+      await room.localParticipant.setScreenShareEnabled(enabled, { audio: false })
+    } catch (err) {
+      const name = err instanceof Error ? err.name : ""
+      if (name === "NotAllowedError" || name === "AbortError") throw new ScreenShareCancelledError()
+      throw err
+    } finally {
+      emit()
+    }
+  }
+
+  return { disconnect, setMicEnabled, setCameraEnabled, setParticipantMuted, setScreenShareEnabled }
 }

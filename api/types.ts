@@ -39,6 +39,7 @@ export interface Server {
   iconUrl?: string | null
   bannerUrl?: string | null
   ownerId?: string
+  suspended?: boolean
 }
 
 // A real role from the servers backend (GET /servers/{id}/roles), distinct from
@@ -188,4 +189,15 @@ export interface VoicePresenceParticipant {
   user_id: string
   microphone_muted: boolean
   joined_at: string
+}
+
+export interface UnreadCounts {
+  unread: number
+  mentions: number
+  serverId?: string
+}
+
+export interface UnreadSummary {
+  channels: Record<string, UnreadCounts>
+  servers: Record<string, UnreadCounts>
 }
