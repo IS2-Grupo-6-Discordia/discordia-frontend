@@ -39,6 +39,7 @@ export interface Server {
   iconUrl?: string | null
   bannerUrl?: string | null
   ownerId?: string
+  suspended?: boolean
 }
 
 // A real role from the servers backend (GET /servers/{id}/roles), distinct from

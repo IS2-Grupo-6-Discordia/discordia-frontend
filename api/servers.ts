@@ -195,6 +195,7 @@ interface BackendServerSummary {
   banner_url: string | null
   owner_id: string
   created_at: string
+  suspended?: boolean
 }
 
 // A server as returned by create/join: the summary plus its channels.
@@ -245,6 +246,7 @@ function toServer(backend: BackendServerSummary): Server {
     iconUrl: backend.icon_url ?? null,
     bannerUrl: backend.banner_url ?? null,
     ownerId: backend.owner_id,
+    suspended: backend.suspended ?? false,
   }
 }
 

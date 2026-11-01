@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react"
+import { useState, useEffect, useRef, useCallback } from "react"
 import {
   View,
   Text,
@@ -328,6 +328,14 @@ export default function ChatScreen() {
   const hideTooltip = () => setTooltip(null)
 
   const [servers, setServers] = useState<Server[]>([])
+  const activeSuspended = !!servers.find((s) => s.id === activeServer)?.suspended
+  const setServerSuspended = useCallback((serverId: string, suspended: boolean) => {
+    setServers((prev) =>
+      prev.some((s) => s.id === serverId && !!s.suspended !== suspended)
+        ? prev.map((s) => (s.id === serverId ? { ...s, suspended } : s))
+        : prev,
+    )
+  }, [])
   const [categories, setCategories] = useState<Category[]>([])
   const [roles, setRoles] = useState<RoleGroup[]>([])
   const [messages, setMessages] = useState<Message[]>([])
@@ -525,13 +533,20 @@ export default function ChatScreen() {
       setActiveChannel("")
       return
     }
+    if (activeSuspended) {
+      setCategories([])
+      setRoles([])
+      setActiveChannel("")
+      return
+    }
     getCategories(activeServer)
       .then((cats) => {
         setCategories(cats)
         const firstText = cats.flatMap((c) => c.channels).find((c) => c.type === "text")
         setActiveChannel(firstText ? firstText.id : "")
       })
-      .catch(() => {
+      .catch((err) => {
+        if (err instanceof ApiError && err.status === 423) setServerSuspended(activeServer, true)
         setCategories([])
         setActiveChannel("")
       })
@@ -539,7 +554,7 @@ export default function ChatScreen() {
     getServerMembers(activeServer)
       .then((members) => setRoles(membersToRoleGroups(members)))
       .catch(() => setRoles([]))
-  }, [activeServer])
+  }, [activeServer, activeSuspended, setServerSuspended])
 
   useEffect(() => {
     if (!activeServer || !isRealServerId(activeServer)) return
@@ -547,9 +562,15 @@ export default function ChatScreen() {
     const timer = setInterval(() => {
       getServerMembers(activeServer)
         .then((members) => {
-          if (active) setRoles(membersToRoleGroups(members))
+          if (!active) return
+          setRoles(membersToRoleGroups(members))
+          setServerSuspended(activeServer, false)
         })
         .catch((err) => {
+          if (active && err instanceof ApiError && err.status === 423) {
+            setServerSuspended(activeServer, true)
+            return
+          }
           // HU-25 fallback: a 403/404 here means we lost access (banned, or the
           // server is gone) and the realtime notice didn't reach us.
           if (active && err instanceof ApiError && (err.status === 403 || err.status === 404)) {
@@ -561,7 +582,7 @@ export default function ChatScreen() {
       active = false
       clearInterval(timer)
     }
-  }, [activeServer])
+  }, [activeServer, setServerSuspended])
 
   useEffect(() => {
     if (!activeChannel) {
@@ -1949,6 +1970,28 @@ export default function ChatScreen() {
                   style={{ position: "absolute", backgroundColor: "#37D6C0", borderTopRightRadius: 2, borderBottomRightRadius: 2, left: -11, top: 6, bottom: 6, width: 3 }}
                 />
               )}
+              {s.suspended ? (
+                <View
+                  pointerEvents="none"
+                  accessibilityLabel="Servidor suspendido"
+                  style={{
+                    position: "absolute",
+                    right: -4,
+                    bottom: -4,
+                    zIndex: 2,
+                    width: 16,
+                    height: 16,
+                    borderRadius: 9999,
+                    alignItems: "center",
+                    justifyContent: "center",
+                    backgroundColor: "#0A1620",
+                    borderWidth: 1,
+                    borderColor: "#FF7F72",
+                  }}
+                >
+                  <Ionicons name="lock-closed" size={9} color="#FF7F72" />
+                </View>
+              ) : null}
               <PressableScale
                 onPress={() => setActiveServer(s.id)}
                 accessibilityLabel={
@@ -2146,6 +2189,7 @@ export default function ChatScreen() {
               accessibilityLabel="Salir del servidor"
               hoverStyle={{ backgroundColor: "rgba(255,127,114,0.14)" }}
               style={{
+                display: activeSuspended ? "none" : "flex",
                 flexDirection: "row",
                 alignItems: "center",
                 justifyContent: "center",
@@ -2244,6 +2288,17 @@ export default function ChatScreen() {
         ) : null}
 
         <ScrollView style={{ flex: 1 }}>
+          {activeSuspended ? (
+            <View style={{ margin: 12, padding: 12, gap: 6, borderRadius: 10, backgroundColor: "rgba(255,127,114,0.10)", borderWidth: 1, borderColor: "rgba(255,127,114,0.35)" }}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                <Ionicons name="lock-closed" size={13} color="#FF7F72" />
+                <Text style={{ color: "#FF9E94", fontSize: 12.5, fontWeight: "700" }}>Servidor suspendido</Text>
+              </View>
+              <Text style={{ color: "#C9DADC", fontSize: 11.5, lineHeight: 16 }}>
+                Los canales no están disponibles mientras dure la suspensión.
+              </Text>
+            </View>
+          ) : null}
           {categories.map((cat) => (
             <View key={cat.id}>
               <View style={{ paddingHorizontal: 12, paddingTop: 12, paddingBottom: 4, flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
@@ -2609,15 +2664,25 @@ export default function ChatScreen() {
                   backgroundColor: "rgba(55,214,192,0.12)",
                 }}
               >
-                <Ionicons name="chatbubbles-outline" size={26} color="#37D6C0" />
+                <Ionicons
+                  name={activeSuspended ? "lock-closed-outline" : "chatbubbles-outline"}
+                  size={26}
+                  color={activeSuspended ? "#FF7F72" : "#37D6C0"}
+                />
               </View>
               <Text style={{ color: "#E6F3F3", fontSize: 15, fontWeight: "700" }}>
-                {activeServer ? "Todavía no hay mensajes" : "No tenés servidores todavía"}
+                {activeSuspended
+                  ? "Este servidor está suspendido"
+                  : activeServer
+                    ? "Todavía no hay mensajes"
+                    : "No tenés servidores todavía"}
               </Text>
               <Text style={{ color: "#8DA8AC", fontSize: 12.5, textAlign: "center", lineHeight: 18 }}>
-                {activeServer
-                  ? `Escribí el primero en #${channel?.name ?? "este canal"} y arrancá la conversación.`
-                  : "Creá uno con el botón + o unite con una invitación."}
+                {activeSuspended
+                  ? "El staff de Discordia lo suspendió mientras revisa una denuncia. Su contenido se conserva y vas a poder volver a usarlo cuando se levante la suspensión."
+                  : activeServer
+                    ? `Escribí el primero en #${channel?.name ?? "este canal"} y arrancá la conversación.`
+                    : "Creá uno con el botón + o unite con una invitación."}
               </Text>
             </View>
           }
@@ -2704,7 +2769,7 @@ export default function ChatScreen() {
         </View>
 
         {/* Input */}
-        <View style={{ paddingHorizontal: 16, paddingBottom: 12, paddingTop: 8 }}>
+        <View style={{ paddingHorizontal: 16, paddingBottom: 12, paddingTop: 8, display: activeSuspended ? "none" : "flex" }}>
           <View
             style={{
               flexDirection: "row",
