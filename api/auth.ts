@@ -23,6 +23,7 @@ interface BackendUser {
   avatar_url?: string | null
   status?: UserStatus
   created_at?: string
+  has_password?: boolean
 }
 
 export function initials(name: string): string {
@@ -45,6 +46,7 @@ function toUser(backendUser: BackendUser): User {
     avatarUrl: backendUser.avatar_url ?? null,
     status: backendUser.status ?? "online",
     createdAt: backendUser.created_at,
+    hasPassword: backendUser.has_password,
   }
 }
 
@@ -117,10 +119,29 @@ export async function loginWithGoogle(idToken: string): Promise<AuthResponse> {
   return { token: res.access_token, user: toUser(res.user) }
 }
 
+export async function requestRegistrationCode(name: string, email: string, password: string): Promise<void> {
+  if (USE_MOCK) {
+    await mockDelay(600)
+    return
+  }
+  try {
+    await api("/auth/users/verification-code", {
+      method: "POST",
+      body: JSON.stringify({ name, email, password }),
+    })
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 409) {
+      throw new Error("EMAIL_DUPLICADO")
+    }
+    throw err
+  }
+}
+
 export async function register(
   name: string,
   email: string,
   password: string,
+  code?: string,
 ): Promise<AuthResponse> {
   if (USE_MOCK) {
     await mockDelay(1200)
@@ -135,7 +156,7 @@ export async function register(
   try {
     const res = await api<RegisterApiResponse>("/auth/users", {
       method: "POST",
-      body: JSON.stringify({ name, email, password }),
+      body: JSON.stringify({ name, email, password, code }),
     })
     await setToken(res.access_token)
     await setRefreshToken(res.refresh_token ?? null)
@@ -303,4 +324,35 @@ export async function updateAvatar(
   }
   const res = await apiUpload<BackendUser>("/auth/users/me/avatar", fd)
   return toUser(res)
+}
+
+export async function changePassword(
+  currentPassword: string,
+  newPassword: string,
+  confirmPassword: string,
+): Promise<void> {
+  const res = await api<{ access_token: string; refresh_token: string }>("/auth/users/me/password", {
+    method: "POST",
+    body: JSON.stringify({
+      current_password: currentPassword,
+      new_password: newPassword,
+      confirm_password: confirmPassword,
+    }),
+  })
+  await setToken(res.access_token)
+  await setRefreshToken(res.refresh_token)
+}
+
+export async function requestEmailChange(newEmail: string, currentPassword: string): Promise<void> {
+  await api("/auth/users/me/email", {
+    method: "POST",
+    body: JSON.stringify({ new_email: newEmail, current_password: currentPassword }),
+  })
+}
+
+export async function confirmEmailChange(token: string): Promise<void> {
+  await api("/auth/email-change/confirm", {
+    method: "POST",
+    body: JSON.stringify({ token }),
+  })
 }

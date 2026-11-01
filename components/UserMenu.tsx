@@ -147,6 +147,11 @@ export default function UserMenu() {
     router.push("/(main)/profile")
   }
 
+  const goToAccount = () => {
+    close()
+    router.push("/(main)/account")
+  }
+
   const handleLogout = () => {
     close()
     logout()
@@ -259,6 +264,7 @@ export default function UserMenu() {
             <View style={{ height: 1, backgroundColor: "rgba(255,255,255,0.08)", marginVertical: 4 }} />
 
             <MenuRow icon="person-outline" label="Perfil" onPress={goToProfile} />
+            <MenuRow icon="settings-outline" label="Mi cuenta" onPress={goToAccount} />
             <MenuRow
               label="Cambiar estado"
               onPress={() => setStatusOpen((value) => !value)}
