@@ -2163,7 +2163,7 @@ export default function ChatScreen() {
           {/* Primary actions. "Invitar" is gated on CREATE_INVITE (canCreateInvite):
               when shown it grows to anchor the row; "Salir" keeps its natural width
               beside it, and is always available to every member. */}
-          <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6, display: activeSuspended ? "none" : "flex" }}>
 
             {canCreateInvite ? (
               <PressableScale
@@ -2189,7 +2189,6 @@ export default function ChatScreen() {
               accessibilityLabel="Salir del servidor"
               hoverStyle={{ backgroundColor: "rgba(255,127,114,0.14)" }}
               style={{
-                display: activeSuspended ? "none" : "flex",
                 flexDirection: "row",
                 alignItems: "center",
                 justifyContent: "center",
@@ -2229,7 +2228,7 @@ export default function ChatScreen() {
               (#97). Rendered as a separate row of uniform square icon buttons
               so they never overflow the sidebar, and only when the member can
               see at least one of them, so the row is never empty. */}
-          {canManageRoles || (isOwner && isRealServerId(activeServer)) ? (
+          {!activeSuspended && (canManageRoles || (isOwner && isRealServerId(activeServer))) ? (
             <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
               {canAdministrate ? (
                 <PressableScale
@@ -2538,12 +2537,12 @@ export default function ChatScreen() {
             </TouchableOpacity>
           ) : null}
           <Text style={{ color: "#E6F3F3", fontWeight: "700", fontSize: 13.5, flexShrink: 1 }} numberOfLines={1}>
-            {channel ? `# ${channel.name}` : activeServer ? "Sin canales" : "Inicio"}
+            {channel ? `# ${channel.name}` : activeSuspended ? "Servidor suspendido" : activeServer ? "Sin canales" : "Inicio"}
           </Text>
           <Text style={{ color: "#8DA8AC", flex: 1, marginLeft: 8, fontSize: 11 }} numberOfLines={1}>
             {servers.find((s) => s.id === activeServer)?.name ?? ""}
           </Text>
-          {activeServer ? (
+          {activeServer && !activeSuspended ? (
           <TouchableOpacity
             onPress={() => setShowMembers((o) => !o)}
             accessibilityLabel="Mostrar u ocultar miembros"
@@ -2807,7 +2806,7 @@ export default function ChatScreen() {
 
       {/* Members panel: a column on wide screens, a sheet over the content on
           phones (tap outside to close). */}
-      {showMembers && isNarrow ? (
+      {showMembers && isNarrow && !activeSuspended ? (
         <TouchableOpacity
           activeOpacity={1}
           onPress={() => setShowMembers(false)}
@@ -2815,7 +2814,7 @@ export default function ChatScreen() {
           style={{ position: "absolute", top: 0, bottom: 0, left: 0, right: 0, backgroundColor: "rgba(3,10,14,0.6)", zIndex: 30 }}
         />
       ) : null}
-      {showMembers && (
+      {showMembers && !activeSuspended && (
         <View
           style={
             isNarrow
