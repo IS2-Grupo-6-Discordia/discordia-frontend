@@ -96,6 +96,7 @@ export function AccountRow({
   icon,
   label,
   value,
+  hint,
   actionLabel,
   onPress,
   last,
@@ -103,6 +104,7 @@ export function AccountRow({
   icon: IconName
   label: string
   value: string
+  hint?: string
   actionLabel: string
   onPress: () => void
   last?: boolean
@@ -140,6 +142,11 @@ export function AccountRow({
         <Text style={{ color: "#E6F3F3", fontSize: 14, fontWeight: "600", marginTop: 2 }} numberOfLines={1}>
           {value}
         </Text>
+        {hint ? (
+          <Text style={{ color: "#5E7E82", fontSize: 11.5, marginTop: 2 }} numberOfLines={2}>
+            {hint}
+          </Text>
+        ) : null}
       </View>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 2 }}>
         <Text style={{ color: "#37D6C0", fontSize: 13, fontWeight: "700" }}>{actionLabel}</Text>
@@ -272,4 +279,13 @@ function Req({ met, text }: { met: boolean; text: string }) {
       <Text style={{ fontSize: 11, color: met ? "#4FD69C" : "#8DA8AC" }}>{text}</Text>
     </View>
   )
+}
+
+export function lastPasswordChange(iso: string | null | undefined): string {
+  if (!iso) return "nunca"
+  const date = new Date(iso)
+  const days = Math.floor((Date.now() - date.getTime()) / 86_400_000)
+  if (days <= 0) return "hoy"
+  if (days === 1) return "ayer"
+  return date.toLocaleDateString("es-AR", { day: "2-digit", month: "2-digit", year: "numeric" })
 }
