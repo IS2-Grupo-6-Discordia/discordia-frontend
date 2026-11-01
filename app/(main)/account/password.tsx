@@ -11,6 +11,7 @@ import {
   NoticeBox,
   PasswordChecks,
   PrimaryButton,
+  lastPasswordChange,
   passwordChecks,
 } from "@/components/account/AccountUi"
 import type { Notice } from "@/components/account/AccountUi"
@@ -18,7 +19,7 @@ import CreatePasswordStep from "@/components/account/CreatePasswordStep"
 import { useAuth } from "@/context/AuthContext"
 
 export default function ChangePassword() {
-  const { user } = useAuth()
+  const { user, setUser } = useAuth()
   const router = useRouter()
   const [step, setStep] = useState<1 | 2 | 3>(1)
   const [current, setCurrent] = useState("")
@@ -58,6 +59,7 @@ export default function ChangePassword() {
     setNotice(null)
     try {
       await changePassword(current, next, confirm)
+      if (user) setUser({ ...user, passwordChangedAt: new Date().toISOString() })
       setCurrent("")
       setNext("")
       setConfirm("")
@@ -90,7 +92,11 @@ export default function ChangePassword() {
   return (
     <AccountScreen
       title="Cambiar contraseña"
-      subtitle={step === 1 ? "Primero confirmá que sos vos." : "Elegí tu nueva contraseña."}
+      subtitle={
+        step === 1
+          ? `Último cambio: ${lastPasswordChange(user?.passwordChangedAt)}. Primero confirmá que sos vos.`
+          : "Elegí tu nueva contraseña."
+      }
       step={step}
       totalSteps={3}
       onBack={back}

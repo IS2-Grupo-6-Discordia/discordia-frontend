@@ -1,7 +1,7 @@
 import { useEffect } from "react"
 import { useRouter } from "expo-router"
 import { getMe } from "@/api/auth"
-import { AccountRow, AccountScreen, Card } from "@/components/account/AccountUi"
+import { AccountRow, AccountScreen, Card, lastPasswordChange } from "@/components/account/AccountUi"
 import { useAuth } from "@/context/AuthContext"
 
 export default function AccountHome() {
@@ -41,6 +41,7 @@ export default function AccountHome() {
           icon="lock-closed-outline"
           label="Contraseña"
           value={googleOnly ? "Sin contraseña (entrás con Google)" : "••••••••"}
+          hint={googleOnly ? undefined : `Último cambio: ${lastPasswordChange(user?.passwordChangedAt)}`}
           actionLabel={googleOnly ? "Crear" : "Cambiar"}
           onPress={() => router.push("/(main)/account/password")}
           last

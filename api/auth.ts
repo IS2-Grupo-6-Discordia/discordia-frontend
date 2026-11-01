@@ -24,6 +24,7 @@ interface BackendUser {
   status?: UserStatus
   created_at?: string
   has_password?: boolean
+  password_changed_at?: string | null
 }
 
 export function initials(name: string): string {
@@ -47,6 +48,7 @@ function toUser(backendUser: BackendUser): User {
     status: backendUser.status ?? "online",
     createdAt: backendUser.created_at,
     hasPassword: backendUser.has_password,
+    passwordChangedAt: backendUser.password_changed_at ?? null,
   }
 }
 

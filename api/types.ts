@@ -12,6 +12,7 @@ export interface User {
   status?: UserStatus
   createdAt?: string
   hasPassword?: boolean
+  passwordChangedAt?: string | null
 }
 
 // Another user's PUBLIC profile. Explicitly carries no private data (no email,
