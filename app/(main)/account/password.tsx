@@ -90,7 +90,7 @@ export default function ChangePassword() {
         <DoneState
           icon="shield-checkmark-outline"
           title="Contraseña cambiada"
-          text="Cerramos las sesiones abiertas en otros dispositivos. Te mandamos un mail de aviso."
+          text="Cerramos las sesiones abiertas en otros dispositivos."
           buttonLabel="Volver a Mi cuenta"
           onPress={exit}
         />

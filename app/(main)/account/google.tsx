@@ -94,7 +94,7 @@ export default function GoogleAccount() {
         <DoneState
           icon="logo-google"
           title="Cuenta de Google vinculada"
-          text={`Desde ahora también podés entrar a Discordia con ${link.email}. Te mandamos un mail de aviso.`}
+          text={`Desde ahora también podés entrar a Discordia con ${link.email}.`}
           buttonLabel="Volver a Mi cuenta"
           onPress={exit}
         />
