@@ -134,6 +134,7 @@ export interface Channel {
   name: string
   type: "text" | "voice"
   topic?: string | null
+  categoryId?: string | null
   unread?: boolean
   mention?: number
 }
@@ -141,6 +142,7 @@ export interface Channel {
 export interface Category {
   id: string
   name: string
+  position: number
   channels: Channel[]
 }
 
