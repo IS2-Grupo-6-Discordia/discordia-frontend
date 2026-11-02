@@ -447,6 +447,13 @@ export async function updateAvatar(
   return toUser(res)
 }
 
+export async function checkCurrentPassword(currentPassword: string): Promise<void> {
+  await api("/auth/users/me/password/check", {
+    method: "POST",
+    body: JSON.stringify({ current_password: currentPassword }),
+  })
+}
+
 export async function changePassword(
   currentPassword: string,
   newPassword: string,

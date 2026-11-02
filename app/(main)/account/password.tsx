@@ -1,7 +1,7 @@
 import { useState } from "react"
 import { Text } from "react-native"
 import { useRouter } from "expo-router"
-import { changePassword } from "@/api/auth"
+import { changePassword, checkCurrentPassword } from "@/api/auth"
 import { ApiError, friendlyError } from "@/api/client"
 import AuthField from "@/components/AuthField"
 import {
@@ -47,10 +47,19 @@ export default function ChangePassword() {
   const mismatch = confirm.length > 0 && next !== confirm
   const canSave = strong && next === confirm
 
-  const toNew = () => {
-    if (!current) return
+  const toNew = async () => {
+    if (!current || busy) return
+    setBusy(true)
     setNotice(null)
-    setStep(2)
+    try {
+      await checkCurrentPassword(current)
+      setStep(2)
+    } catch (err) {
+      setCurrent("")
+      setNotice({ tone: "error", text: friendlyError(err) })
+    } finally {
+      setBusy(false)
+    }
   }
 
   const save = async () => {
@@ -117,7 +126,7 @@ export default function ChangePassword() {
               onSubmitEditing={toNew}
               containerStyle={{ marginBottom: 14 }}
             />
-            <PrimaryButton label="Continuar" onPress={toNew} disabled={!current} />
+            <PrimaryButton label="Continuar" onPress={toNew} disabled={!current} busy={busy} />
           </>
         ) : (
           <>
