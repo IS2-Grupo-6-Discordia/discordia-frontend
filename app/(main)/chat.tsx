@@ -93,6 +93,8 @@ import StatusDot, { STATUS_LABELS } from "@/components/StatusDot"
 import ModalShell from "@/components/ModalShell"
 import PressableScale from "@/components/PressableScale"
 import DeleteServerModal from "@/components/DeleteServerModal"
+import ReportModal from "@/components/ReportModal"
+import type { ReportTarget } from "@/api/reports"
 import ServerSettingsModal from "@/components/ServerSettingsModal"
 import RolesModal from "@/components/RolesModal"
 import RolePermissionsModal from "@/components/RolePermissionsModal"
@@ -486,6 +488,7 @@ export default function ChatScreen() {
   // active server decide which controls show up; the backend checks again.
   const [myPerms, setMyPerms] = useState<MyServerPermissions | null>(null)
   const [banTarget, setBanTarget] = useState<{ id: string; name: string } | null>(null)
+  const [reportTarget, setReportTarget] = useState<ReportTarget | null>(null)
   const [banReason, setBanReason] = useState("")
   const [banBusy, setBanBusy] = useState(false)
   const [banError, setBanError] = useState("")
@@ -820,6 +823,15 @@ export default function ChatScreen() {
         icon: "ban-outline",
         tone: "danger",
         onPress: () => openBanModal(memberId, memberName),
+      })
+    }
+    if (isRealServerId(activeServer) && memberId !== user?.id) {
+      actions.push({
+        key: "report",
+        label: "Reportar",
+        icon: "flag-outline",
+        tone: "danger",
+        onPress: () => setReportTarget({ type: "user", serverId: activeServer, userId: memberId, name: memberName }),
       })
     }
     return actions
@@ -2202,6 +2214,24 @@ export default function ChatScreen() {
               <Ionicons name="exit-outline" size={13} color="#8DA8AC" />
               <Text style={{ color: "#8DA8AC", fontSize: 11.5, fontWeight: "600" }}>Salir</Text>
             </PressableScale>
+            {!isOwner && isRealServerId(activeServer) ? (
+              <PressableScale
+                onPress={() => setReportTarget({ type: "server", serverId: activeServer, name: activeServerName })}
+                accessibilityLabel="Reportar servidor"
+                hoverStyle={{ backgroundColor: "rgba(255,127,114,0.14)" }}
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  paddingHorizontal: 10,
+                  paddingVertical: 6,
+                  borderRadius: 8,
+                  backgroundColor: "rgba(255,255,255,0.05)",
+                }}
+              >
+                <Ionicons name="flag-outline" size={13} color="#8DA8AC" />
+              </PressableScale>
+            ) : null}
             {canBan ? (
               <PressableScale
                 onPress={openBansModal}
@@ -3636,6 +3666,8 @@ export default function ChatScreen() {
       </ModalShell>
 
       {/* Delete-server confirmation (HU-6 / #97) */}
+      <ReportModal target={reportTarget} onClose={() => setReportTarget(null)} />
+
       <DeleteServerModal
         visible={deleteSrvOpen}
         serverName={activeServerName}
