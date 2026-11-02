@@ -4,6 +4,7 @@ import type { TextStyle, ViewStyle } from "react-native"
 import { Ionicons } from "@expo/vector-icons"
 import { friendlyError } from "@/api/client"
 import { REPORT_REASONS, listServerReports, resolveServerReport, type ReportStatus, type ServerReport } from "@/api/reports"
+import AuditLogList from "./AuditLogList"
 import ModalShell from "./ModalShell"
 import PressableScale from "./PressableScale"
 
@@ -11,15 +12,18 @@ interface ServerReportsModalProps {
   visible: boolean
   serverId: string
   serverName: string
-  nameOf: (userId: string) => string
+  nameOf: (userId: string) => string | null
   channelNameOf: (channelId: string) => string | null
   onClose: () => void
   onChanged: () => void
 }
 
-const TABS: { value: ReportStatus | "resolved"; label: string }[] = [
+type Tab = ReportStatus | "resolved" | "log"
+
+const TABS: { value: Tab; label: string }[] = [
   { value: "pending", label: "Pendientes" },
   { value: "resolved", label: "Resueltos" },
+  { value: "log", label: "Registro" },
 ]
 
 function reasonLabel(reason: string): string {
@@ -31,14 +35,16 @@ function formatDate(iso: string): string {
   return `${d.toLocaleDateString("es-AR", { day: "2-digit", month: "2-digit" })} ${d.toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" })}`
 }
 
-export default function ServerReportsModal({ visible, serverId, serverName, nameOf, channelNameOf, onClose, onChanged }: ServerReportsModalProps) {
-  const [tab, setTab] = useState<ReportStatus | "resolved">("pending")
+export default function ServerReportsModal({ visible, serverId, serverName, nameOf: memberName, channelNameOf, onClose, onChanged }: ServerReportsModalProps) {
+  const nameOf = (userId: string) => memberName(userId) ?? "Usuario fuera del servidor"
+  const [tab, setTab] = useState<Tab>("pending")
   const [reports, setReports] = useState<ServerReport[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState("")
   const [busyId, setBusyId] = useState<string | null>(null)
 
   const load = useCallback(async () => {
+    if (tab === "log") return
     setLoading(true)
     setError("")
     try {
@@ -78,7 +84,7 @@ export default function ServerReportsModal({ visible, serverId, serverName, name
   }
 
   return (
-    <ModalShell visible={visible} onClose={onClose} title="Reportes del servidor" subtitle={serverName} maxWidth={520}>
+    <ModalShell visible={visible} onClose={onClose} title="Moderación" subtitle={serverName} maxWidth={520}>
       <View style={{ flexDirection: "row", gap: 6, marginBottom: 12 }}>
         {TABS.map((t) => {
           const selected = tab === t.value
@@ -103,13 +109,15 @@ export default function ServerReportsModal({ visible, serverId, serverName, name
         })}
       </View>
 
-      {error ? (
+      {tab === "log" ? <AuditLogList serverId={serverId} memberName={memberName} /> : null}
+
+      {tab !== "log" && error ? (
         <View style={NOTICE_ERROR}>
           <Text style={{ color: "#FF9E94", fontSize: 12.5 }}>{error}</Text>
         </View>
       ) : null}
 
-      {loading ? (
+      {tab === "log" ? null : loading ? (
         <View style={{ paddingVertical: 30, alignItems: "center" }}>
           <ActivityIndicator color="#FF7F72" />
         </View>

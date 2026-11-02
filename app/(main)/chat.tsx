@@ -2272,7 +2272,7 @@ export default function ChatScreen() {
             {canModerate ? (
               <PressableScale
                 onPress={() => setServerReportsOpen(true)}
-                accessibilityLabel={pendingReports > 0 ? `Reportes del servidor, ${pendingReports} pendientes` : "Reportes del servidor"}
+                accessibilityLabel={pendingReports > 0 ? `Moderación del servidor, ${pendingReports} reportes pendientes` : "Moderación del servidor"}
                 hoverStyle={{ backgroundColor: "rgba(255,127,114,0.30)" }}
                 style={{
                   flexDirection: "row",
@@ -2287,7 +2287,7 @@ export default function ChatScreen() {
                 }}
               >
                 <Ionicons name="shield-outline" size={13} color="#FF7F72" />
-                <Text style={{ color: "#FF7F72", fontSize: 11.5, fontWeight: "700" }}>Reportes</Text>
+                <Text style={{ color: "#FF7F72", fontSize: 11.5, fontWeight: "700" }}>Moderación</Text>
                 {pendingReports > 0 ? (
                   <View style={{ minWidth: 17, height: 17, paddingHorizontal: 4, borderRadius: 9999, alignItems: "center", justifyContent: "center", backgroundColor: "#FF7F72" }}>
                     <Text style={{ color: "#04211D", fontSize: 10, fontWeight: "800" }}>{pendingReports > 99 ? "99+" : pendingReports}</Text>
@@ -3768,7 +3768,7 @@ export default function ChatScreen() {
         visible={serverReportsOpen}
         serverId={activeServer}
         serverName={activeServerName}
-        nameOf={(id) => roles.flatMap((r) => r.members).find((m) => m.id === id)?.name ?? "Usuario fuera del servidor"}
+        nameOf={(id) => roles.flatMap((r) => r.members).find((m) => m.id === id)?.name ?? null}
         channelNameOf={(id) => categories.flatMap((c) => c.channels).find((c) => c.id === id)?.name ?? null}
         onClose={() => setServerReportsOpen(false)}
         onChanged={refreshPendingReports}
