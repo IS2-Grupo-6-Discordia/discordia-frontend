@@ -17,6 +17,7 @@ import QrCode from "@/components/QrCode"
 import { AccountScreen, Card, DoneState, NoticeBox, PrimaryButton } from "@/components/account/AccountUi"
 import type { Notice } from "@/components/account/AccountUi"
 import { useAuth } from "@/context/AuthContext"
+import { saveTextFile } from "@/lib/saveTextFile"
 
 type Flow = "overview" | "qr" | "verify" | "codes" | "reauth-regenerate" | "reauth-disable" | "disabled"
 
@@ -40,6 +41,7 @@ export default function TwoFactorScreen() {
   const [codes, setCodes] = useState<string[]>([])
   const [saved, setSaved] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [downloaded, setDownloaded] = useState(false)
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState<Notice>(null)
   const usesPassword = user?.hasPassword !== false
@@ -83,6 +85,7 @@ export default function TwoFactorScreen() {
       setCodes(list)
       setSaved(false)
       setCopied(false)
+      setDownloaded(false)
       setStatus({ enabled: true, enabledAt: new Date().toISOString(), recoveryCodesRemaining: list.length })
       if (user) setUser({ ...user, twoFactorEnabled: true })
       setCode("")
@@ -110,6 +113,7 @@ export default function TwoFactorScreen() {
       setCodes(list)
       setSaved(false)
       setCopied(false)
+      setDownloaded(false)
       setStatus((s) => (s ? { ...s, recoveryCodesRemaining: list.length } : s))
       setPassword("")
       setCode("")
@@ -146,6 +150,27 @@ export default function TwoFactorScreen() {
   const copyCodes = async () => {
     await Clipboard.setStringAsync(codes.join("\n"))
     setCopied(true)
+  }
+
+  const downloadCodes = async () => {
+    const generated = new Date().toLocaleString("es-AR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })
+    const content = [
+      "Discordia - Códigos de recuperación",
+      `Cuenta: ${user?.email ?? ""}`,
+      `Generados: ${generated}`,
+      "",
+      "Cada código sirve una sola vez para entrar si no tenés tu app autenticadora.",
+      "Si generás una lista nueva, estos dejan de servir.",
+      "",
+      ...codes,
+      "",
+    ].join("\n")
+    try {
+      await saveTextFile("discordia-codigos-de-recuperacion.txt", content)
+      setDownloaded(true)
+    } catch {
+      setNotice({ tone: "error", text: "No pudimos guardar el archivo. Probá copiándolos." })
+    }
   }
 
   if (!status) {
@@ -240,10 +265,16 @@ export default function TwoFactorScreen() {
               </View>
             ))}
           </View>
-          <TouchableOpacity onPress={copyCodes} style={{ flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, marginTop: 14, paddingVertical: 8 }}>
-            <Ionicons name={copied ? "checkmark" : "copy-outline"} size={15} color="#37D6C0" />
-            <Text style={{ color: "#37D6C0", fontWeight: "700", fontSize: 13 }}>{copied ? "Copiados" : "Copiar todos"}</Text>
-          </TouchableOpacity>
+          <View style={{ flexDirection: "row", justifyContent: "center", flexWrap: "wrap", columnGap: 22, marginTop: 14 }}>
+            <TouchableOpacity onPress={copyCodes} style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 8 }}>
+              <Ionicons name={copied ? "checkmark" : "copy-outline"} size={15} color="#37D6C0" />
+              <Text style={{ color: "#37D6C0", fontWeight: "700", fontSize: 13 }}>{copied ? "Copiados" : "Copiar todos"}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={downloadCodes} style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 8 }}>
+              <Ionicons name={downloaded ? "checkmark" : "download-outline"} size={15} color="#37D6C0" />
+              <Text style={{ color: "#37D6C0", fontWeight: "700", fontSize: 13 }}>{downloaded ? "Descargados" : "Descargar .txt"}</Text>
+            </TouchableOpacity>
+          </View>
         </Card>
         <Pressable
           onPress={() => {
