@@ -36,13 +36,14 @@ export default function ReportModal({ target, onClose }: ReportModalProps) {
       await createReport(target, reason, detail)
       setSent(true)
     } catch (err) {
-      setError(err instanceof ApiError && err.status === 409 ? "Ya lo reportaste y el equipo de moderación todavía lo está revisando." : friendlyError(err))
+      setError(err instanceof ApiError && err.status === 409 ? "Ya tenés un reporte pendiente sobre este contenido. Vas a poder volver a reportarlo cuando lo revisen." : friendlyError(err))
     } finally {
       setBusy(false)
     }
   }
 
-  const title = target?.type === "server" ? "Reportar servidor" : "Reportar usuario"
+  const title = target?.type === "server" ? "Reportar servidor" : target?.type === "message" ? "Reportar mensaje" : "Reportar usuario"
+  const reviewers = target?.type === "server" ? "El equipo de Discordia" : "Los moderadores del servidor"
 
   return (
     <ModalShell visible={!!target} onClose={busy ? () => undefined : onClose} title={title} subtitle={target?.name}>
@@ -53,7 +54,7 @@ export default function ReportModal({ target, onClose }: ReportModalProps) {
           </View>
           <Text style={{ color: "#E6F3F3", fontSize: 15, fontWeight: "800", textAlign: "center" }}>Gracias por avisar</Text>
           <Text style={{ color: "#8DA8AC", fontSize: 13, lineHeight: 19, textAlign: "center", marginBottom: 6 }}>
-            El equipo de moderación va a revisar el reporte. Nadie más ve que lo hiciste.
+            {reviewers} van a revisar el reporte. Nadie más ve que lo hiciste.
           </Text>
           <PressableScale onPress={onClose} style={[PRIMARY, { alignSelf: "stretch" }]}>
             <Text style={PRIMARY_TEXT}>Listo</Text>
@@ -64,6 +65,15 @@ export default function ReportModal({ target, onClose }: ReportModalProps) {
           {error ? (
             <View style={NOTICE_ERROR}>
               <Text style={{ color: "#FF9E94", fontSize: 12.5 }}>{error}</Text>
+            </View>
+          ) : null}
+
+          {target?.type === "message" ? (
+            <View style={QUOTE}>
+              <Text style={{ color: "#8DA8AC", fontSize: 11, fontWeight: "700", marginBottom: 3 }}>{target.name}</Text>
+              <Text numberOfLines={4} style={{ color: "#E6F3F3", fontSize: 13, lineHeight: 18 }}>
+                {target.content}
+              </Text>
             </View>
           ) : null}
 
@@ -142,6 +152,16 @@ const FIELD: TextStyle = {
   backgroundColor: "rgba(255,255,255,0.06)",
   borderWidth: 1,
   borderColor: "rgba(255,255,255,0.10)",
+}
+
+const QUOTE: ViewStyle = {
+  paddingHorizontal: 12,
+  paddingVertical: 10,
+  borderRadius: 10,
+  marginBottom: 14,
+  borderLeftWidth: 3,
+  borderLeftColor: "#FF7F72",
+  backgroundColor: "rgba(255,255,255,0.04)",
 }
 
 const NOTICE_ERROR: ViewStyle = {
