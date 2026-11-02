@@ -8,7 +8,8 @@
     "ios": "expo start --ios",
     "web": "expo start --web",
     "warmup": "node scripts/warmup.mjs",
-    "preweb": "node scripts/warmup.mjs"
+    "preweb": "node scripts/warmup.mjs",
+    "vercel-build": "expo export -p web"
   },
   "dependencies": {
     "@config-plugins/react-native-webrtc": "^15.0.2",
