@@ -62,8 +62,11 @@ export class RealtimeConnection {
     this.options.onStatus?.("closed")
   }
 
-  // Subscriptions survive reconnects: they are replayed on every open, and
-  // every service answers a subscribe with the full current state.
+  // Subscriptions survive reconnects: they are replayed on every open. Some
+  // services answer a subscribe with the full current state (voice presence),
+  // but messages do NOT resend history on subscribe — a reconnect gap is
+  // recovered by refetching the channel history over HTTP and merging by id
+  // (ADR 0009 / historia 16), not from the socket.
   subscribe(ids: string[]) {
     const added = ids.filter((id) => !this.subscriptions.has(id))
     added.forEach((id) => this.subscriptions.add(id))
