@@ -11,6 +11,9 @@ export interface User {
   bio?: string | null
   status?: UserStatus
   createdAt?: string
+  hasPassword?: boolean
+  passwordChangedAt?: string | null
+  twoFactorEnabled?: boolean
 }
 
 // Another user's PUBLIC profile. Explicitly carries no private data (no email,

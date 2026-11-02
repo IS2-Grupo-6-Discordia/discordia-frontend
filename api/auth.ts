@@ -23,6 +23,9 @@ interface BackendUser {
   avatar_url?: string | null
   status?: UserStatus
   created_at?: string
+  has_password?: boolean
+  password_changed_at?: string | null
+  two_factor_enabled?: boolean
 }
 
 export function initials(name: string): string {
@@ -45,6 +48,9 @@ function toUser(backendUser: BackendUser): User {
     avatarUrl: backendUser.avatar_url ?? null,
     status: backendUser.status ?? "online",
     createdAt: backendUser.created_at,
+    hasPassword: backendUser.has_password,
+    passwordChangedAt: backendUser.password_changed_at ?? null,
+    twoFactorEnabled: backendUser.two_factor_enabled ?? false,
   }
 }
 
@@ -75,6 +81,92 @@ interface LoginApiResponse {
   token_type: string
 }
 
+interface TwoFactorChallengeApiResponse {
+  two_factor_required: true
+  challenge_token: string
+  method: "password" | "google"
+}
+
+export class TwoFactorRequired extends Error {
+  challengeToken: string
+  method: "password" | "google"
+
+  constructor(challengeToken: string, method: "password" | "google") {
+    super("two_factor_required")
+    this.challengeToken = challengeToken
+    this.method = method
+  }
+}
+
+async function finishLogin(res: LoginApiResponse | TwoFactorChallengeApiResponse): Promise<AuthResponse> {
+  if ("two_factor_required" in res) throw new TwoFactorRequired(res.challenge_token, res.method)
+  await setToken(res.access_token)
+  await setRefreshToken(res.refresh_token)
+  return { token: res.access_token, user: toUser(res.user) }
+}
+
+export interface TwoFactorLoginResult extends AuthResponse {
+  recoveryCodeUsed: boolean
+  recoveryCodesRemaining: number
+}
+
+export async function completeTwoFactorLogin(
+  challengeToken: string,
+  secondFactor: { code: string } | { recoveryCode: string },
+): Promise<TwoFactorLoginResult> {
+  const res = await api<LoginApiResponse & { recovery_code_used: boolean; recovery_codes_remaining: number }>("/auth/login/2fa", {
+    method: "POST",
+    body: JSON.stringify({
+      challenge_token: challengeToken,
+      ...("code" in secondFactor ? { code: secondFactor.code } : { recovery_code: secondFactor.recoveryCode }),
+    }),
+  })
+  await setToken(res.access_token)
+  await setRefreshToken(res.refresh_token)
+  return {
+    token: res.access_token,
+    user: toUser(res.user),
+    recoveryCodeUsed: res.recovery_code_used,
+    recoveryCodesRemaining: res.recovery_codes_remaining,
+  }
+}
+
+export interface TwoFactorStatus {
+  enabled: boolean
+  enabledAt: string | null
+  recoveryCodesRemaining: number
+}
+
+export async function getTwoFactorStatus(): Promise<TwoFactorStatus> {
+  const res = await api<{ enabled: boolean; enabled_at: string | null; recovery_codes_remaining: number }>("/auth/users/me/2fa")
+  return { enabled: res.enabled, enabledAt: res.enabled_at, recoveryCodesRemaining: res.recovery_codes_remaining }
+}
+
+export async function startTwoFactorSetup(): Promise<{ secret: string; otpauthUri: string }> {
+  const res = await api<{ secret: string; otpauth_uri: string }>("/auth/users/me/2fa/setup", { method: "POST" })
+  return { secret: res.secret, otpauthUri: res.otpauth_uri }
+}
+
+export async function enableTwoFactor(code: string): Promise<string[]> {
+  const res = await api<{ recovery_codes: string[] }>("/auth/users/me/2fa/enable", {
+    method: "POST",
+    body: JSON.stringify({ code }),
+  })
+  return res.recovery_codes
+}
+
+export async function disableTwoFactor(proof: { password?: string; code?: string }): Promise<void> {
+  await api("/auth/users/me/2fa/disable", { method: "POST", body: JSON.stringify(proof) })
+}
+
+export async function regenerateRecoveryCodes(proof: { password?: string; code?: string }): Promise<string[]> {
+  const res = await api<{ recovery_codes: string[] }>("/auth/users/me/2fa/recovery-codes", {
+    method: "POST",
+    body: JSON.stringify(proof),
+  })
+  return res.recovery_codes
+}
+
 interface RegisterApiResponse {
   user: BackendUser
   access_token: string
@@ -98,29 +190,79 @@ export async function login(
     return { token, user: MOCK_USER }
   }
 
-  const res = await api<LoginApiResponse>("/auth/login", {
+  const res = await api<LoginApiResponse | TwoFactorChallengeApiResponse>("/auth/login", {
     method: "POST",
     body: JSON.stringify({ email, password }),
   })
-  await setToken(res.access_token)
-  await setRefreshToken(res.refresh_token)
-  return { token: res.access_token, user: toUser(res.user) }
+  return finishLogin(res)
 }
 
 export async function loginWithGoogle(idToken: string): Promise<AuthResponse> {
-  const res = await api<LoginApiResponse>("/auth/oauth/google", {
+  const res = await api<LoginApiResponse | TwoFactorChallengeApiResponse>("/auth/oauth/google", {
     method: "POST",
     body: JSON.stringify({ id_token: idToken }),
   })
-  await setToken(res.access_token)
-  await setRefreshToken(res.refresh_token)
-  return { token: res.access_token, user: toUser(res.user) }
+  return finishLogin(res)
+}
+
+export interface GoogleLink {
+  linked: boolean
+  email: string | null
+  linkedAt: string | null
+  canUnlink: boolean
+}
+
+interface GoogleLinkApiResponse {
+  linked: boolean
+  email: string | null
+  linked_at: string | null
+  can_unlink: boolean
+}
+
+function toGoogleLink(res: GoogleLinkApiResponse): GoogleLink {
+  return { linked: res.linked, email: res.email, linkedAt: res.linked_at, canUnlink: res.can_unlink }
+}
+
+export async function getGoogleLink(): Promise<GoogleLink> {
+  return toGoogleLink(await api<GoogleLinkApiResponse>("/auth/users/me/google"))
+}
+
+export async function linkGoogle(idToken: string, password: string | null): Promise<GoogleLink> {
+  return toGoogleLink(
+    await api<GoogleLinkApiResponse>("/auth/users/me/google", {
+      method: "POST",
+      body: JSON.stringify({ id_token: idToken, password }),
+    }),
+  )
+}
+
+export async function unlinkGoogle(): Promise<GoogleLink> {
+  return toGoogleLink(await api<GoogleLinkApiResponse>("/auth/users/me/google", { method: "DELETE" }))
+}
+
+export async function requestRegistrationCode(name: string, email: string, password: string): Promise<void> {
+  if (USE_MOCK) {
+    await mockDelay(600)
+    return
+  }
+  try {
+    await api("/auth/users/verification-code", {
+      method: "POST",
+      body: JSON.stringify({ name, email, password }),
+    })
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 409) {
+      throw new Error("EMAIL_DUPLICADO")
+    }
+    throw err
+  }
 }
 
 export async function register(
   name: string,
   email: string,
   password: string,
+  code?: string,
 ): Promise<AuthResponse> {
   if (USE_MOCK) {
     await mockDelay(1200)
@@ -135,7 +277,7 @@ export async function register(
   try {
     const res = await api<RegisterApiResponse>("/auth/users", {
       method: "POST",
-      body: JSON.stringify({ name, email, password }),
+      body: JSON.stringify({ name, email, password, code }),
     })
     await setToken(res.access_token)
     await setRefreshToken(res.refresh_token ?? null)
@@ -303,4 +445,42 @@ export async function updateAvatar(
   }
   const res = await apiUpload<BackendUser>("/auth/users/me/avatar", fd)
   return toUser(res)
+}
+
+export async function checkCurrentPassword(currentPassword: string): Promise<void> {
+  await api("/auth/users/me/password/check", {
+    method: "POST",
+    body: JSON.stringify({ current_password: currentPassword }),
+  })
+}
+
+export async function changePassword(
+  currentPassword: string,
+  newPassword: string,
+  confirmPassword: string,
+): Promise<void> {
+  const res = await api<{ access_token: string; refresh_token: string }>("/auth/users/me/password", {
+    method: "POST",
+    body: JSON.stringify({
+      current_password: currentPassword,
+      new_password: newPassword,
+      confirm_password: confirmPassword,
+    }),
+  })
+  await setToken(res.access_token)
+  await setRefreshToken(res.refresh_token)
+}
+
+export async function requestEmailChange(newEmail: string, currentPassword: string): Promise<void> {
+  await api("/auth/users/me/email", {
+    method: "POST",
+    body: JSON.stringify({ new_email: newEmail, current_password: currentPassword }),
+  })
+}
+
+export async function confirmEmailChange(token: string): Promise<void> {
+  await api("/auth/email-change/confirm", {
+    method: "POST",
+    body: JSON.stringify({ token }),
+  })
 }

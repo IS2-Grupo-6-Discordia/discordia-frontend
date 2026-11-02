@@ -8,7 +8,8 @@
     "ios": "expo start --ios",
     "web": "expo start --web",
     "warmup": "node scripts/warmup.mjs",
-    "preweb": "node scripts/warmup.mjs"
+    "preweb": "node scripts/warmup.mjs",
+    "vercel-build": "expo export -p web"
   },
   "dependencies": {
     "@config-plugins/react-native-webrtc": "^15.0.2",
@@ -30,9 +31,11 @@
     "expo-image-picker": "~57.0.20",
     "expo-linking": "~57.0.11",
     "expo-router": "~57.0.24",
+    "expo-sharing": "~57.0.24",
     "expo-status-bar": "~57.0.1",
     "livekit-client": "^2.23.0",
     "nativewind": "^4.0.36",
+    "qrcode-generator": "^1.4.4",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "react-native": "0.86.3",

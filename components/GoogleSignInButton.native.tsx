@@ -14,11 +14,12 @@ export function isGoogleSignInAvailable(): boolean {
 
 interface GoogleSignInButtonProps {
   loading?: boolean
+  loadingLabel?: string
   onCredential: (idToken: string) => void
   onUnavailable: () => void
 }
 
-export default function GoogleSignInButton({ loading, onCredential, onUnavailable }: GoogleSignInButtonProps) {
+export default function GoogleSignInButton({ loading, loadingLabel = "Ingresando con Google...", onCredential, onUnavailable }: GoogleSignInButtonProps) {
   const [picking, setPicking] = useState(false)
   const busy = loading || picking
 
@@ -62,7 +63,7 @@ export default function GoogleSignInButton({ loading, onCredential, onUnavailabl
       {loading ? (
         <>
           <ActivityIndicator size="small" color="#8DA8AC" />
-          <Text style={{ color: "#8DA8AC", fontWeight: "600", fontSize: 14 }}>Ingresando con Google...</Text>
+          <Text style={{ color: "#8DA8AC", fontWeight: "600", fontSize: 14 }}>{loadingLabel}</Text>
         </>
       ) : (
         <>
