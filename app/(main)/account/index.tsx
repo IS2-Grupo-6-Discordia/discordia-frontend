@@ -1,18 +1,27 @@
-import { useEffect } from "react"
-import { useRouter } from "expo-router"
-import { getMe } from "@/api/auth"
+import { useCallback, useEffect, useState } from "react"
+import { useFocusEffect, useRouter } from "expo-router"
+import { getGoogleLink, getMe, type GoogleLink } from "@/api/auth"
 import { AccountRow, AccountScreen, Card, lastPasswordChange } from "@/components/account/AccountUi"
 import { useAuth } from "@/context/AuthContext"
 
 export default function AccountHome() {
   const { user, setUser } = useAuth()
   const router = useRouter()
+  const [google, setGoogle] = useState<GoogleLink | null>(null)
 
   useEffect(() => {
     getMe()
       .then(setUser)
       .catch(() => undefined)
   }, [setUser])
+
+  useFocusEffect(
+    useCallback(() => {
+      getGoogleLink()
+        .then(setGoogle)
+        .catch(() => undefined)
+    }, []),
+  )
 
   const googleOnly = user?.hasPassword === false
 
@@ -52,6 +61,14 @@ export default function AccountHome() {
           hint={user?.twoFactorEnabled ? undefined : "Protegé tu cuenta con un código de tu celular"}
           actionLabel={user?.twoFactorEnabled ? "Administrar" : "Activar"}
           onPress={() => router.push("/(main)/account/two-factor")}
+        />
+        <AccountRow
+          icon="logo-google"
+          label="Google"
+          value={!google ? "…" : google.linked ? (google.email ?? "Vinculada") : "No vinculada"}
+          hint={google && !google.linked ? "Entrá a Discordia con tu cuenta de Google" : undefined}
+          actionLabel={google?.linked ? "Administrar" : "Vincular"}
+          onPress={() => router.push("/(main)/account/google")}
           last
         />
       </Card>

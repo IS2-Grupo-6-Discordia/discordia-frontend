@@ -205,6 +205,41 @@ export async function loginWithGoogle(idToken: string): Promise<AuthResponse> {
   return finishLogin(res)
 }
 
+export interface GoogleLink {
+  linked: boolean
+  email: string | null
+  linkedAt: string | null
+  canUnlink: boolean
+}
+
+interface GoogleLinkApiResponse {
+  linked: boolean
+  email: string | null
+  linked_at: string | null
+  can_unlink: boolean
+}
+
+function toGoogleLink(res: GoogleLinkApiResponse): GoogleLink {
+  return { linked: res.linked, email: res.email, linkedAt: res.linked_at, canUnlink: res.can_unlink }
+}
+
+export async function getGoogleLink(): Promise<GoogleLink> {
+  return toGoogleLink(await api<GoogleLinkApiResponse>("/auth/users/me/google"))
+}
+
+export async function linkGoogle(idToken: string, password: string | null): Promise<GoogleLink> {
+  return toGoogleLink(
+    await api<GoogleLinkApiResponse>("/auth/users/me/google", {
+      method: "POST",
+      body: JSON.stringify({ id_token: idToken, password }),
+    }),
+  )
+}
+
+export async function unlinkGoogle(): Promise<GoogleLink> {
+  return toGoogleLink(await api<GoogleLinkApiResponse>("/auth/users/me/google", { method: "DELETE" }))
+}
+
 export async function requestRegistrationCode(name: string, email: string, password: string): Promise<void> {
   if (USE_MOCK) {
     await mockDelay(600)
