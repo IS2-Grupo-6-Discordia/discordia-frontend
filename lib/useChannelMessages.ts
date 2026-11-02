@@ -177,7 +177,11 @@ export function useChannelMessages({
         .then((msgs) => {
           if (channelRef.current?.id === ch.id) deliver(msgs)
         })
-        .catch(() => undefined)
+        .catch((err) => {
+          if (err instanceof ApiError && err.status === ERROR_LOCKED) {
+            onServerSuspendedRef.current(ch.serverId)
+          }
+        })
     }, RECONCILE_MS)
     return () => clearInterval(timer)
   }, [enabled, status, channelId, deliver])
@@ -203,6 +207,8 @@ export function useChannelMessages({
           if (cancelled) return
           if (err instanceof ApiError && err.status === 503) {
             interval = Math.min(POLL_MAX_MS, interval * 2)
+          } else if (err instanceof ApiError && err.status === ERROR_LOCKED) {
+            onServerSuspendedRef.current(ch.serverId)
           }
         })
         .finally(() => {
