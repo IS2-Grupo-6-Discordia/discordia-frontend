@@ -1440,7 +1440,10 @@ export default function ChatScreen() {
         ),
       })
       sentIds.current.add(msg.id)
-      setMessages((prev) => [...prev, msg])
+      // Dedupe by id: the realtime messages.created echo for this same message can land
+      // (via mergeMessages) before this awaited POST resolves, so a raw append would show
+      // the sender's own message twice. Skip the append when the id is already present.
+      setMessages((prev) => (prev.some((m) => m.id === msg.id) ? prev : [...prev, msg]))
       setInput("")
     } catch (err) {
       // CA4: solo el 422 por largo máximo muestra ese aviso; cualquier otro 422
