@@ -44,6 +44,14 @@ export default function AccountHome() {
           hint={googleOnly ? undefined : `Último cambio: ${lastPasswordChange(user?.passwordChangedAt)}`}
           actionLabel={googleOnly ? "Crear" : "Cambiar"}
           onPress={() => router.push("/(main)/account/password")}
+        />
+        <AccountRow
+          icon="shield-checkmark-outline"
+          label="Verificación en dos pasos"
+          value={user?.twoFactorEnabled ? "Activada" : "Desactivada"}
+          hint={user?.twoFactorEnabled ? undefined : "Protegé tu cuenta con un código de tu celular"}
+          actionLabel={user?.twoFactorEnabled ? "Administrar" : "Activar"}
+          onPress={() => router.push("/(main)/account/two-factor")}
           last
         />
       </Card>
