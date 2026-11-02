@@ -279,6 +279,21 @@ const UNREAD_REFRESH_MS = 8_000
 const MESSAGE_MAX = 4000
 // A partir de acá mostramos el contador, para no distraer en mensajes cortos.
 const MESSAGE_COUNTER_FROM = MESSAGE_MAX - 200
+
+// El 422 del backend por contenido demasiado largo trae, en su detalle pydantic
+// (array de {msg}), un "...at most 4000 characters". Lo distinguimos de otros
+// 422 (p.ej. "at most 20 mentions per message") para no mostrar el aviso de
+// largo cuando el problema es otro.
+function isMaxLengthError(detail: unknown): boolean {
+  const text = Array.isArray(detail)
+    ? detail
+        .map((d) => (d && typeof d === "object" && "msg" in d ? String((d as { msg: unknown }).msg) : ""))
+        .join(" ")
+    : typeof detail === "string"
+      ? detail
+      : ""
+  return /at most \d+ characters|must be at most \d+ characters/i.test(text)
+}
 const REPORTS_REFRESH_MS = 30_000
 
 // Below this width (phones) the three columns don't fit: the screen shows one
@@ -611,13 +626,22 @@ export default function ChatScreen() {
       setMessages([])
       return
     }
+    let active = true
     getMessages(activeChannel)
-      .then(setMessages)
+      .then((msgs) => {
+        // Descartar una respuesta que llega tarde de un canal anterior: no puede
+        // meter mensajes en el canal abierto ahora.
+        if (active) setMessages(msgs)
+      })
       .catch((err) => {
+        if (!active) return
         // Un 423 del GET del historial activa la UI de servidor suspendido.
         if (err instanceof ApiError && err.status === 423) setServerSuspended(activeServer, true)
         setMessages([])
       })
+    return () => {
+      active = false
+    }
   }, [activeChannel])
 
   // --- Indicadores de no leído (CA1 canal, CA2 servidor, CA3 menciones) ---
@@ -652,13 +676,13 @@ export default function ChatScreen() {
         byId.set(m.id, m)
         sentIds.current.delete(m.id)
       }
-      const merged = [...byId.values()].sort((a, b) =>
-        (a.createdAt ?? "") < (b.createdAt ?? "")
-          ? -1
-          : (a.createdAt ?? "") > (b.createdAt ?? "")
-            ? 1
-            : 0,
-      )
+      // Comparar por fecha real: POST, GET y messages.created podrían serializar
+      // created_at con formatos distintos, así que no se ordena como texto.
+      const merged = [...byId.values()].sort((a, b) => {
+        const ta = a.createdAt ? Date.parse(a.createdAt) : 0
+        const tb = b.createdAt ? Date.parse(b.createdAt) : 0
+        return ta - tb
+      })
       const same = merged.length === prev.length && merged.every((m, i) => m.id === prev[i]?.id)
       return same ? prev : merged
     })
@@ -1419,9 +1443,11 @@ export default function ChatScreen() {
       setMessages((prev) => [...prev, msg])
       setInput("")
     } catch (err) {
-      // CA4: el 422 del backend por largo máximo se muestra con el mismo aviso.
+      // CA4: solo el 422 por largo máximo muestra ese aviso; cualquier otro 422
+      // (p.ej. demasiadas menciones) va por el error general.
       if (err instanceof ApiError && err.status === 422) {
-        setBannerError(`Máximo ${MESSAGE_MAX} caracteres`)
+        if (isMaxLengthError(err.detail)) setBannerError(`Máximo ${MESSAGE_MAX} caracteres`)
+        else setBannerError(friendlyError(err))
         return
       }
       // Suspensión: un 423 del POST activa la UI existente.
@@ -1752,28 +1778,36 @@ export default function ChatScreen() {
       return
     }
     const channelId = activeChannel
+    // Reset solo cuando cambia el canal (no en un reintento), para no pisar un
+    // valor conocido ni meter una respuesta vieja en el canal nuevo.
     if (permsChannelRef.current !== channelId) {
       permsChannelRef.current = channelId
       setCanSend(null)
     }
     let active = true
-    getMyChannelPermissions(activeServer, channelId)
-      .then((perms) => {
-        if (active && permsChannelRef.current === channelId) setCanSend(perms.canSend)
-      })
-      .catch((err) => {
-        if (!active || permsChannelRef.current !== channelId) return
-        // Solo un 403/423 definitivo deshabilita; un error transitorio deja el
-        // campo habilitado (el POST igual valida) y se reintenta más tarde.
-        if (err instanceof ApiError && err.status === 423) {
-          setCanSend(false)
-          setServerSuspended(activeServer, true)
-        } else if (err instanceof ApiError && err.status === 403) {
-          setCanSend(false)
-        }
-      })
+    const fetchPerms = () => {
+      getMyChannelPermissions(activeServer, channelId)
+        .then((perms) => {
+          // Puede volver false->true: si recuperó el permiso, se habilita sin recargar.
+          if (active && permsChannelRef.current === channelId) setCanSend(perms.canSend)
+        })
+        .catch((err) => {
+          if (!active || permsChannelRef.current !== channelId) return
+          // 423: el servidor está suspendido → UI existente, NO "no tenés permiso".
+          if (err instanceof ApiError && err.status === 423) setServerSuspended(activeServer, true)
+          // 403: perdió el permiso → deshabilitar.
+          else if (err instanceof ApiError && err.status === 403) setCanSend(false)
+          // Transitorio (timeout/5xx/red): mantené el valor anterior, no lo pases a false.
+        })
+    }
+    // Al abrir el canal y, con el canal abierto, cada 60 s (junto a la
+    // reconciliación), por si recupera el permiso. Un reconnect (messagesStatus)
+    // también reintenta.
+    fetchPerms()
+    const timer = setInterval(fetchPerms, 60_000)
     return () => {
       active = false
+      clearInterval(timer)
     }
   }, [activeServer, activeChannel, messagesStatus])
 
