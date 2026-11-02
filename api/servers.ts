@@ -12,6 +12,7 @@ import type {
   ChannelOverwrite,
   ServerBan,
   MyServerPermissions,
+  MyChannelPermissions,
 } from "./types"
 
 // The backend's admin permission string, surfaced in each RoleOut.permissions[].
@@ -1018,6 +1019,34 @@ export async function getMyServerPermissions(serverId: string): Promise<MyServer
 
   const res = await api<BackendMyPermissions>(`/servers/${serverId}/members/me/permissions`)
   return { isOwner: res.is_owner, permissions: res.permissions }
+}
+
+interface BackendMyChannelPermissions {
+  server_id: string
+  channel_id: string
+  is_owner: boolean
+  permissions: string[]
+  can_send: boolean
+}
+
+// The caller's effective permissions in a specific text channel (HU-7 overrides
+// applied). `canSend` is the backend's own SEND_MESSAGES verdict, used to gate
+// the composer. The backend re-checks on POST, so this only hides a field that
+// would fail anyway. A non-403/423 failure is the caller's to handle (it must
+// NOT disable the composer on a transient error).
+export async function getMyChannelPermissions(
+  serverId: string,
+  channelId: string,
+): Promise<MyChannelPermissions> {
+  if (WRITE_USE_MOCK) {
+    await mockDelay(300)
+    return { isOwner: true, permissions: [], canSend: true }
+  }
+
+  const res = await api<BackendMyChannelPermissions>(
+    `/servers/${serverId}/channels/${channelId}/members/me/permissions`,
+  )
+  return { isOwner: res.is_owner, permissions: res.permissions, canSend: res.can_send }
 }
 
 // HU-25: ban a user. Banning someone already banned is idempotent (200 with the
