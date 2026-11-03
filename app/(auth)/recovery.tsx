@@ -8,7 +8,7 @@ import {
   Platform,
 } from "react-native"
 import { useRouter } from "expo-router"
-import { requestRecovery } from "@/api/auth"
+import { requestRecovery } from "@/lib/api/auth"
 import AuthBrand from "@/components/AuthBrand"
 import AuthField from "@/components/AuthField"
 

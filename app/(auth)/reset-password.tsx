@@ -8,8 +8,8 @@ import {
   Platform,
 } from "react-native"
 import { useRouter, useLocalSearchParams } from "expo-router"
-import { confirmPasswordReset } from "@/api/auth"
-import { friendlyError } from "@/api/client"
+import { confirmPasswordReset } from "@/lib/api/auth"
+import { friendlyError } from "@/lib/api/client"
 import AuthBrand from "@/components/AuthBrand"
 import AuthField from "@/components/AuthField"
 

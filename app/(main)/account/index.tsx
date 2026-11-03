@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react"
 import { useFocusEffect, useRouter } from "expo-router"
-import { getGoogleLink, getMe, type GoogleLink } from "@/api/auth"
+import { getGoogleLink, getMe, type GoogleLink } from "@/lib/api/auth"
 import { AccountRow, AccountScreen, Card, lastPasswordChange } from "@/components/account/AccountUi"
 import { useAuth } from "@/context/AuthContext"
 
