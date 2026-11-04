@@ -11,10 +11,12 @@ import {
 import { useLocalSearchParams, useRouter } from "expo-router"
 import { Ionicons } from "@expo/vector-icons"
 import { useAuth } from "@/context/AuthContext"
+import { useVoice } from "@/context/VoiceContext"
 import { getUserById } from "@/api/auth"
 import { getCommonServers } from "@/api/servers"
 import { ApiError, friendlyError } from "@/api/client"
 import Avatar from "@/components/Avatar"
+import PressableScale from "@/components/PressableScale"
 import { PresenceDot, STATUS_LABELS } from "@/components/StatusDot"
 import type { PublicUser, Server } from "@/api/types"
 
@@ -60,9 +62,12 @@ export default function PublicProfileScreen() {
 
   const [profile, setProfile] = useState<PublicUser | null>(null)
   const [commonServers, setCommonServers] = useState<Server[]>([])
+  const voice = useVoice()
   const [loading, setLoading] = useState(true)
   const [notFound, setNotFound] = useState(false)
   const [loadError, setLoadError] = useState("")
+  const [callError, setCallError] = useState("")
+  const [calling, setCalling] = useState(false)
 
   const goBack = () => {
     if (router.canGoBack()) router.back()
@@ -284,6 +289,49 @@ export default function PublicProfileScreen() {
                     </View>
                   )}
                 </View>
+
+                {/* HU-50: Call button — visible when they share servers */}
+                {commonServers.length > 0 && voice.supported ? (
+                  <View style={{ marginTop: 20 }}>
+                    {callError ? (
+                      <Text style={{ color: "#FF9E94", fontSize: 12, textAlign: "center", marginBottom: 8 }}>
+                        {callError}
+                      </Text>
+                    ) : null}
+                    <PressableScale
+                      onPress={async () => {
+                        setCallError("")
+                        setCalling(true)
+                        try {
+                          await voice.startCall(String(id))
+                          router.push("/(main)/voice")
+                        } catch (err) {
+                          setCallError(err instanceof Error ? err.message : "No pudimos iniciar la llamada.")
+                        } finally {
+                          setCalling(false)
+                        }
+                      }}
+                      disabled={calling || voice.status !== "idle" || voice.callStatus !== "idle"}
+                      accessibilityLabel={`Llamar a ${profile.name}`}
+                      hoverStyle={{ backgroundColor: "#2BC4AF" }}
+                      style={{
+                        flexDirection: "row",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        gap: 8,
+                        paddingVertical: 12,
+                        borderRadius: 12,
+                        backgroundColor: "#37D6C0",
+                        opacity: calling || voice.status !== "idle" || voice.callStatus !== "idle" ? 0.5 : 1,
+                      }}
+                    >
+                      <Ionicons name="call" size={18} color="#04211D" />
+                      <Text style={{ color: "#04211D", fontWeight: "700", fontSize: 14 }}>
+                        {calling ? "Llamando..." : "Llamar"}
+                      </Text>
+                    </PressableScale>
+                  </View>
+                ) : null}
               </>
             )}
           </View>

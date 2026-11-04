@@ -2217,9 +2217,13 @@ export default function ChatScreen() {
             {canCreateInvite ? (
               <PressableScale
                 onPress={handleGenerateInvite}
+                accessibilityLabel="Invitar al servidor"
                 hoverStyle={{ backgroundColor: "rgba(55,214,192,0.22)" }}
                 style={{
-                  flex: 1,
+                  flexGrow: 1,
+                  flexShrink: 0,
+                  flexBasis: 92,
+                  minWidth: 92,
                   flexDirection: "row",
                   alignItems: "center",
                   justifyContent: "center",
@@ -2230,7 +2234,12 @@ export default function ChatScreen() {
                 }}
               >
                 <Ionicons name="person-add-outline" size={13} color="#37D6C0" />
-                <Text style={{ color: "#37D6C0", fontSize: 11.5, fontWeight: "700" }}>Invitar</Text>
+                <Text
+                  numberOfLines={1}
+                  style={{ color: "#37D6C0", fontSize: 11.5, fontWeight: "700", flexShrink: 0 }}
+                >
+                  Invitar
+                </Text>
               </PressableScale>
             ) : null}
             <PressableScale
