@@ -97,6 +97,7 @@ export function AccountRow({
   label,
   value,
   hint,
+  badge,
   actionLabel,
   onPress,
   last,
@@ -105,6 +106,7 @@ export function AccountRow({
   label: string
   value: string
   hint?: string
+  badge?: ReactNode
   actionLabel: string
   onPress: () => void
   last?: boolean
@@ -142,6 +144,7 @@ export function AccountRow({
         <Text style={{ color: "#E6F3F3", fontSize: 14, fontWeight: "600", marginTop: 2 }} numberOfLines={1}>
           {value}
         </Text>
+        {badge ? <View style={{ flexDirection: "row", marginTop: 4 }}>{badge}</View> : null}
         {hint ? (
           <Text style={{ color: "#5E7E82", fontSize: 11.5, marginTop: 2 }} numberOfLines={2}>
             {hint}
@@ -153,6 +156,26 @@ export function AccountRow({
         <Ionicons name="chevron-forward" size={15} color="#37D6C0" />
       </View>
     </TouchableOpacity>
+  )
+}
+
+export function UnverifiedBadge() {
+  return (
+    <View
+      accessibilityLabel="Email no verificado"
+      style={{
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 3,
+        paddingHorizontal: 6,
+        paddingVertical: 2,
+        borderRadius: 9999,
+        backgroundColor: "rgba(240,194,75,0.14)",
+      }}
+    >
+      <Ionicons name="alert-circle" size={12} color="#F0C24B" />
+      <Text style={{ color: "#F0C24B", fontSize: 10.5, fontWeight: "800" }}>No verificado</Text>
+    </View>
   )
 }
 

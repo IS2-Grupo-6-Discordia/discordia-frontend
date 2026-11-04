@@ -24,6 +24,7 @@ interface BackendUser {
   status?: UserStatus
   created_at?: string
   has_password?: boolean
+  email_verified?: boolean
   password_changed_at?: string | null
   two_factor_enabled?: boolean
 }
@@ -49,6 +50,7 @@ function toUser(backendUser: BackendUser): User {
     status: backendUser.status ?? "online",
     createdAt: backendUser.created_at,
     hasPassword: backendUser.has_password,
+    emailVerified: backendUser.email_verified,
     passwordChangedAt: backendUser.password_changed_at ?? null,
     twoFactorEnabled: backendUser.two_factor_enabled ?? false,
   }

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react"
 import { useFocusEffect, useRouter } from "expo-router"
 import { getGoogleLink, getMe, type GoogleLink } from "@/lib/api/auth"
-import { AccountRow, AccountScreen, Card, lastPasswordChange } from "@/components/account/AccountUi"
+import { AccountRow, AccountScreen, Card, UnverifiedBadge, lastPasswordChange } from "@/components/account/AccountUi"
 import { useAuth } from "@/context/AuthContext"
 
 export default function AccountHome() {
@@ -43,6 +43,7 @@ export default function AccountHome() {
           icon="mail-outline"
           label="Email"
           value={user?.email ?? ""}
+          badge={user?.emailVerified === false ? <UnverifiedBadge /> : undefined}
           actionLabel="Cambiar"
           onPress={() => router.push("/(main)/account/email")}
         />
