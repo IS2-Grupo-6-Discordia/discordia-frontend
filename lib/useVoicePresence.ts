@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react"
-import { getUsersBatch, initials } from "@/api/auth"
-import { getVoiceRealtimeTicket, listVoiceParticipants } from "@/api/voice"
-import type { VoicePresenceParticipant } from "@/api/types"
+import { getUsersBatch, initials } from "@/lib/api/auth"
+import { getVoiceRealtimeTicket, listVoiceParticipants } from "@/lib/api/voice"
+import type { VoicePresenceParticipant } from "@/lib/api/types"
 import { RealtimeConnection } from "@/lib/realtime"
 import type { RealtimeMessage, RealtimeStatus } from "@/lib/realtime"
 

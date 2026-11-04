@@ -12,8 +12,8 @@ import {
 } from "react-native"
 import type { ViewStyle, TextStyle } from "react-native"
 import { Ionicons } from "@expo/vector-icons"
-import { ADMIN_PERMISSION } from "@/api"
-import type { ServerRole } from "@/api/types"
+import { ADMIN_PERMISSION } from "@/lib/api"
+import type { ServerRole } from "@/lib/api/types"
 import ModalShell from "./ModalShell"
 import PressableScale from "./PressableScale"
 

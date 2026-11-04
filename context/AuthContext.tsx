@@ -1,10 +1,10 @@
 import { createContext, useContext, useState, useCallback, useEffect, useRef } from "react"
 import type { ReactNode } from "react"
 import AsyncStorage from "@react-native-async-storage/async-storage"
-import type { User } from "@/api/types"
+import type { User } from "@/lib/api/types"
 import { Platform } from "react-native"
-import { ApiError, getToken, loadToken } from "@/api/client"
-import { getMe, logout as apiLogout, sendPresence } from "@/api/auth"
+import { ApiError, getToken, loadToken } from "@/lib/api/client"
+import { getMe, logout as apiLogout, sendPresence } from "@/lib/api/auth"
 
 const PRESENCE_HEARTBEAT_MS = 30_000
 const PRESENCE_IMMEDIATE_THROTTLE_MS = 5_000

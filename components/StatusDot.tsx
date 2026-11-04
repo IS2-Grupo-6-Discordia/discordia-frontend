@@ -1,6 +1,6 @@
 import { View } from "react-native"
 import { Ionicons } from "@expo/vector-icons"
-import type { PresenceStatus, UserStatus } from "@/api/types"
+import type { PresenceStatus, UserStatus } from "@/lib/api/types"
 
 export const STATUS_COLORS: Record<PresenceStatus, string> = {
   online: "#4FD69C",

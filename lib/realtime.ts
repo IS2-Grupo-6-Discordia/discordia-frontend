@@ -1,5 +1,5 @@
-import { ApiError } from "@/api/client"
-import { newRequestId, newTraceparent } from "@/api/trace"
+import { ApiError } from "@/lib/api/client"
+import { newRequestId, newTraceparent } from "@/lib/api/trace"
 
 // Generic client for the services' realtime WebSockets (ADR 0006, contract in
 // documentacion/tiempo-real.md). KrakenD CE can't proxy WebSockets, so the

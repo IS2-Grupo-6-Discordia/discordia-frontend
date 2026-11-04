@@ -1,8 +1,8 @@
 import { useState } from "react"
 import { ActivityIndicator, Text, TouchableOpacity, View } from "react-native"
 import { Ionicons } from "@expo/vector-icons"
-import { ApiError, friendlyError } from "@/api/client"
-import { completeTwoFactorLogin, type TwoFactorLoginResult } from "@/api/auth"
+import { ApiError, friendlyError } from "@/lib/api/client"
+import { completeTwoFactorLogin, type TwoFactorLoginResult } from "@/lib/api/auth"
 import AuthField from "./AuthField"
 import PressableScale from "./PressableScale"
 
