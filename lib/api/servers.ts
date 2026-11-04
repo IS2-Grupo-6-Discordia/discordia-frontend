@@ -31,6 +31,10 @@ export const MANAGE_ROLES_PERMISSION = "manage_roles"
 // whether to show the "Invitar" action.
 export const CREATE_INVITE_PERMISSION = "create_invite"
 
+// The backend's "manage channels" permission string. A member who holds it (or
+// ADMINISTRATOR, or being the owner) may manage channels and categories.
+export const MANAGE_CHANNELS_PERMISSION = "manage_channels"
+
 // Reads always stay mocked: the backend does NOT expose GET /servers,
 // GET categories, or GET roles endpoints yet, so there is nothing to call.
 const READ_USE_MOCK = false
@@ -50,6 +54,7 @@ const MOCK_CATEGORIES: Category[] = [
   {
     id: "general",
     name: "General",
+    position: 0,
     channels: [
       { id: "anuncios", name: "anuncios", type: "text" },
       { id: "general", name: "general", type: "text" },
@@ -60,6 +65,7 @@ const MOCK_CATEGORIES: Category[] = [
   {
     id: "voz",
     name: "Voz",
+    position: 1,
     channels: [
       { id: "sala-1", name: "Sala 1", type: "voice" },
       { id: "sala-2", name: "Sala 2", type: "voice" },
@@ -75,11 +81,13 @@ function starterCategories(serverId: string): Category[] {
     {
       id: `${serverId}:cat-general`,
       name: "General",
+      position: 0,
       channels: [{ id: `${serverId}:general`, name: "general", type: "text" }],
     },
     {
       id: `${serverId}:cat-voz`,
       name: "Voz",
+      position: 1,
       channels: [{ id: `${serverId}:sala-1`, name: "Sala 1", type: "voice" }],
     },
   ]
@@ -125,21 +133,46 @@ export async function getCategories(serverId: string): Promise<Category[]> {
     return serverId === MOCK_SERVER_ID ? MOCK_CATEGORIES : starterCategories(serverId)
   }
 
-  const channels = await api<BackendChannel[]>(`/servers/${serverId}/channels`)
-  // The backend has no concept of categories — group all channels into one.
-  if (channels.length === 0) return []
-  return [
-    {
-      id: `${serverId}:channels`,
-      name: "Canales",
-      channels: channels.map((ch) => ({
-        id: ch.id,
-        name: ch.name,
-        type: ch.type,
-        topic: ch.topic,
-      })),
-    },
-  ]
+  const [channels, backendCategories] = await Promise.all([
+    api<BackendChannel[]>(`/servers/${serverId}/channels`),
+    api<BackendCategory[]>(`/servers/${serverId}/categories`),
+  ])
+
+  // Channels without a category go into a synthetic "General" section shown first.
+  const uncategorized = channels.filter((ch) => !ch.category_id)
+  const result: Category[] = []
+
+  if (uncategorized.length > 0) {
+    result.push({
+      id: `${serverId}:general`,
+      name: "General",
+      position: -1,
+      channels: uncategorized.map(toFrontendChannel),
+    })
+  }
+
+  // Real categories, ordered by position from the backend.
+  for (const cat of backendCategories) {
+    const catChannels = channels.filter((ch) => ch.category_id === cat.id)
+    result.push({
+      id: cat.id,
+      name: cat.name,
+      position: cat.position,
+      channels: catChannels.map(toFrontendChannel),
+    })
+  }
+
+  return result
+}
+
+function toFrontendChannel(ch: BackendChannel) {
+  return {
+    id: ch.id,
+    name: ch.name,
+    type: ch.type,
+    topic: ch.topic,
+    categoryId: ch.category_id ?? null,
+  }
 }
 
 export async function getRoles(serverId: string): Promise<RoleGroup[]> {
@@ -186,6 +219,13 @@ interface BackendChannel {
   name: string
   type: "text" | "voice"
   topic?: string | null
+  category_id?: string | null
+}
+
+interface BackendCategory {
+  id: string
+  name: string
+  position: number
 }
 
 // A server as returned by GET /servers (the sidebar list): no channels.
@@ -542,15 +582,15 @@ export async function deleteChannel(serverId: string, channelId: string): Promis
   await api<void>(`/servers/${serverId}/channels/${channelId}`, { method: "DELETE" })
 }
 
-// Update a channel's name and/or topic. Returns the updated channel.
+// Update a channel's name, topic and/or category. Returns the updated channel.
 export async function updateChannel(
   serverId: string,
   channelId: string,
-  data: { name?: string; topic?: string | null },
+  data: { name?: string; topic?: string | null; category_id?: string | null },
 ): Promise<BackendChannel> {
   if (WRITE_USE_MOCK) {
     await mockDelay()
-    return { id: channelId, name: data.name ?? "canal", type: "text", topic: data.topic ?? null }
+    return { id: channelId, name: data.name ?? "canal", type: "text", topic: data.topic ?? null, category_id: data.category_id ?? null }
   }
   return api<BackendChannel>(`/servers/${serverId}/channels/${channelId}`, {
     method: "PATCH",
@@ -561,12 +601,12 @@ export async function updateChannel(
 // Create a channel inside a server. Returns the new channel.
 export async function createChannel(
   serverId: string,
-  data: { name: string; type: "text" | "voice" },
+  data: { name: string; type: "text" | "voice"; category_id?: string | null },
 ): Promise<BackendChannel> {
   if (WRITE_USE_MOCK) {
     await mockDelay()
     const id = "ch-" + Math.random().toString(36).slice(2, 10)
-    return { id, name: data.name, type: data.type, topic: null }
+    return { id, name: data.name, type: data.type, topic: null, category_id: data.category_id ?? null }
   }
   return api<BackendChannel>(`/servers/${serverId}/channels`, {
     method: "POST",
@@ -1101,4 +1141,49 @@ export async function unbanMember(serverId: string, userId: string): Promise<voi
   }
 
   await api<void>(`/servers/${serverId}/bans/${userId}`, { method: "DELETE" })
+}
+
+// ---- HU-4: categories --------------------------------------------------------
+
+// Create a category in a server. Requires MANAGE_CHANNELS.
+export async function createCategory(
+  serverId: string,
+  name: string,
+): Promise<BackendCategory> {
+  if (WRITE_USE_MOCK) {
+    await mockDelay()
+    return { id: "cat-" + Math.random().toString(36).slice(2, 10), name, position: 0 }
+  }
+  return api<BackendCategory>(`/servers/${serverId}/categories`, {
+    method: "POST",
+    body: JSON.stringify({ name }),
+  })
+}
+
+// Rename a category. Requires MANAGE_CHANNELS.
+export async function updateCategory(
+  serverId: string,
+  categoryId: string,
+  name: string,
+): Promise<BackendCategory> {
+  if (WRITE_USE_MOCK) {
+    await mockDelay()
+    return { id: categoryId, name, position: 0 }
+  }
+  return api<BackendCategory>(`/servers/${serverId}/categories/${categoryId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ name }),
+  })
+}
+
+// Delete a category. Its channels become uncategorized. Requires MANAGE_CHANNELS.
+export async function deleteCategory(
+  serverId: string,
+  categoryId: string,
+): Promise<void> {
+  if (WRITE_USE_MOCK) {
+    await mockDelay()
+    return
+  }
+  await api<void>(`/servers/${serverId}/categories/${categoryId}`, { method: "DELETE" })
 }

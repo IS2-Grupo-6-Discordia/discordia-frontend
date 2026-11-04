@@ -34,6 +34,9 @@ import {
   updateChannel,
   reorderChannels,
   createChannel,
+  createCategory,
+  updateCategory,
+  deleteCategory,
   startOwnershipTransfer,
   getPendingTransfer,
   acceptOwnershipTransfer,
@@ -56,6 +59,7 @@ import {
   getRoleMembers,
   ADMIN_PERMISSION,
   MANAGE_ROLES_PERMISSION,
+  MANAGE_CHANNELS_PERMISSION,
   CREATE_INVITE_PERMISSION,
   getMyServerPermissions,
   banMember,
@@ -411,7 +415,7 @@ export default function ChatScreen() {
 
   // Edit-channel modal
   const [editChOpen, setEditChOpen] = useState(false)
-  const [editChTarget, setEditChTarget] = useState<{ id: string; name: string; topic?: string | null } | null>(null)
+  const [editChTarget, setEditChTarget] = useState<{ id: string; name: string; topic?: string | null; categoryId?: string | null } | null>(null)
   const [editChName, setEditChName] = useState("")
   const [editChTopic, setEditChTopic] = useState("")
   const [editChBusy, setEditChBusy] = useState(false)
@@ -421,8 +425,29 @@ export default function ChatScreen() {
   const [createChOpen, setCreateChOpen] = useState(false)
   const [createChName, setCreateChName] = useState("")
   const [createChType, setCreateChType] = useState<"text" | "voice">("text")
+  const [createChCategoryId, setCreateChCategoryId] = useState<string | null>(null)
   const [createChBusy, setCreateChBusy] = useState(false)
   const [createChError, setCreateChError] = useState("")
+
+  // Category management modals (HU-4)
+  const [catCreateOpen, setCatCreateOpen] = useState(false)
+  const [catCreateName, setCatCreateName] = useState("")
+  const [catCreateBusy, setCatCreateBusy] = useState(false)
+  const [catCreateError, setCatCreateError] = useState("")
+
+  const [catEditOpen, setCatEditOpen] = useState(false)
+  const [catEditTarget, setCatEditTarget] = useState<{ id: string; name: string } | null>(null)
+  const [catEditName, setCatEditName] = useState("")
+  const [catEditBusy, setCatEditBusy] = useState(false)
+  const [catEditError, setCatEditError] = useState("")
+
+  const [catDeleteOpen, setCatDeleteOpen] = useState(false)
+  const [catDeleteTarget, setCatDeleteTarget] = useState<{ id: string; name: string } | null>(null)
+  const [catDeleteBusy, setCatDeleteBusy] = useState(false)
+  const [catDeleteError, setCatDeleteError] = useState("")
+
+  // Edit-channel: selected category
+  const [editChCategoryId, setEditChCategoryId] = useState<string | null | "UNSET">("UNSET")
 
   // Leave-server confirmation (HU-5)
   const [leaveOpen, setLeaveOpen] = useState(false)
@@ -829,6 +854,15 @@ export default function ChatScreen() {
     (isOwner ||
       memberPermissions.includes(ADMIN_PERMISSION) ||
       memberPermissions.includes(MANAGE_ROLES_PERMISSION))
+
+  // Can manage channels/categories: the backend lets anyone with MANAGE_CHANNELS
+  // (or ADMINISTRATOR, or the owner) create/edit/delete channels and categories.
+  const canManageChannels =
+    !!activeServer &&
+    isRealServerId(activeServer) &&
+    (isOwner ||
+      memberPermissions.includes(ADMIN_PERMISSION) ||
+      memberPermissions.includes(MANAGE_CHANNELS_PERMISSION))
 
   // Can create invitations: the backend enforces CREATE_INVITE on
   // POST /servers/{id}/invites (the owner and ADMINISTRATOR always qualify), so
@@ -1859,10 +1893,11 @@ export default function ChatScreen() {
 
   // ---- Channel edit ---------------------------------------------------------
 
-  const openEditChannel = (ch: { id: string; name: string; topic?: string | null }) => {
+  const openEditChannel = (ch: { id: string; name: string; topic?: string | null; categoryId?: string | null }) => {
     setEditChTarget(ch)
     setEditChName(ch.name)
     setEditChTopic(ch.topic ?? "")
+    setEditChCategoryId(ch.categoryId ?? null)
     setEditChError("")
     setEditChOpen(true)
   }
@@ -1877,11 +1912,18 @@ export default function ChatScreen() {
     setEditChBusy(true)
     setEditChError("")
     try {
-      const data: { name?: string; topic?: string | null } = {}
+      const data: { name?: string; topic?: string | null; category_id?: string | null } = {}
       if (trimmedName !== editChTarget.name) data.name = trimmedName
       const newTopic = editChTopic.trim() || null
       const oldTopic = editChTarget.topic ?? null
       if (newTopic !== oldTopic) data.topic = newTopic
+
+      // category_id: only send when the user actually changed it (editChCategoryId
+      // starts as "UNSET" when no change is intended — compare against the channel's
+      // current categoryId).
+      const oldCatId = editChTarget.categoryId ?? null
+      const newCatId = editChCategoryId === "UNSET" ? oldCatId : editChCategoryId
+      if (newCatId !== oldCatId) data.category_id = newCatId
 
       if (Object.keys(data).length === 0) {
         setEditChOpen(false)
@@ -1889,16 +1931,45 @@ export default function ChatScreen() {
       }
 
       const updated = await updateChannel(activeServer, editChTarget.id, data)
-      setCategories((prev) =>
-        prev.map((cat) => ({
-          ...cat,
-          channels: cat.channels.map((ch) =>
-            ch.id === editChTarget.id
-              ? { ...ch, name: updated.name, topic: updated.topic }
-              : ch,
-          ),
-        })),
-      )
+      const updatedCatId = updated.category_id ?? null
+
+      // If the category changed, move the channel between categories in local state
+      if (updatedCatId !== oldCatId) {
+        setCategories((prev) => {
+          // Find the full channel object from state before removing it
+          const existingCh = prev.flatMap((c) => c.channels).find((c) => c.id === editChTarget.id)
+          // Remove from old category
+          const without = prev.map((cat) => ({
+            ...cat,
+            channels: cat.channels.filter((ch) => ch.id !== editChTarget.id),
+          }))
+          // Build updated channel object
+          const updatedCh = {
+            ...(existingCh ?? { id: editChTarget.id, type: "text" as const }),
+            name: updated.name,
+            topic: updated.topic,
+            categoryId: updatedCatId,
+          }
+          // Add to new category
+          return without.map((cat) => {
+            const isTarget = updatedCatId
+              ? cat.id === updatedCatId
+              : cat.name === "General" || cat.position === -1
+            return isTarget ? { ...cat, channels: [...cat.channels, updatedCh] } : cat
+          })
+        })
+      } else {
+        setCategories((prev) =>
+          prev.map((cat) => ({
+            ...cat,
+            channels: cat.channels.map((ch) =>
+              ch.id === editChTarget.id
+                ? { ...ch, name: updated.name, topic: updated.topic }
+                : ch,
+            ),
+          })),
+        )
+      }
       setEditChOpen(false)
     } catch (err) {
       setEditChError(friendlyError(err))
@@ -1909,9 +1980,10 @@ export default function ChatScreen() {
 
   // ---- Channel create --------------------------------------------------------
 
-  const openCreateChannel = () => {
+  const openCreateChannel = (categoryId?: string | null) => {
     setCreateChName("")
     setCreateChType("text")
+    setCreateChCategoryId(categoryId ?? null)
     setCreateChError("")
     setCreateChOpen(true)
   }
@@ -1932,17 +2004,20 @@ export default function ChatScreen() {
     setCreateChBusy(true)
     setCreateChError("")
     try {
-      const created = await createChannel(activeServer, { name: trimmedName, type: createChType })
+      const created = await createChannel(activeServer, { name: trimmedName, type: createChType, category_id: createChCategoryId })
+      const newCh = { id: created.id, name: created.name, type: created.type, topic: created.topic, categoryId: created.category_id ?? null }
       setCategories((prev) => {
         if (prev.length === 0) {
-          return [{ id: `${activeServer}:channels`, name: "Canales", channels: [{ id: created.id, name: created.name, type: created.type, topic: created.topic }] }]
+          return [{ id: `${activeServer}:general`, name: "General", position: -1, channels: [newCh] }]
         }
-        // Append to the last category
-        return prev.map((cat, i) =>
-          i === prev.length - 1
-            ? { ...cat, channels: [...cat.channels, { id: created.id, name: created.name, type: created.type, topic: created.topic }] }
-            : cat,
-        )
+        // Place in the matching category, or "General" (first) if uncategorized
+        const targetCatId = createChCategoryId
+        return prev.map((cat) => {
+          const isTarget = targetCatId
+            ? cat.id === targetCatId
+            : cat.name === "General" || cat.position === -1
+          return isTarget ? { ...cat, channels: [...cat.channels, newCh] } : cat
+        })
       })
       setActiveChannel(created.id)
       setCreateChOpen(false)
@@ -1956,6 +2031,125 @@ export default function ChatScreen() {
       }
     } finally {
       setCreateChBusy(false)
+    }
+  }
+
+  // ---- Category CRUD --------------------------------------------------------
+
+  const openCreateCategory = () => {
+    setCatCreateName("")
+    setCatCreateError("")
+    setCatCreateOpen(true)
+  }
+
+  const handleCreateCategory = async () => {
+    if (!isRealServerId(activeServer)) return
+    const trimmedName = catCreateName.trim()
+    if (!trimmedName) {
+      setCatCreateError("Poné un nombre para la categoría.")
+      return
+    }
+    setCatCreateBusy(true)
+    setCatCreateError("")
+    try {
+      const created = await createCategory(activeServer, trimmedName)
+      setCategories((prev) => [
+        ...prev,
+        { id: created.id, name: created.name, position: created.position, channels: [] },
+      ])
+      setCatCreateOpen(false)
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 409) {
+        setCatCreateError("Ya existe una categoría con ese nombre.")
+      } else if (err instanceof ApiError && err.status === 403) {
+        setCatCreateError("No tenés permisos para crear categorías.")
+      } else {
+        setCatCreateError(friendlyError(err))
+      }
+    } finally {
+      setCatCreateBusy(false)
+    }
+  }
+
+  const openEditCategory = (cat: { id: string; name: string }) => {
+    setCatEditTarget(cat)
+    setCatEditName(cat.name)
+    setCatEditError("")
+    setCatEditOpen(true)
+  }
+
+  const handleEditCategory = async () => {
+    if (!catEditTarget || !isRealServerId(activeServer)) return
+    const trimmedName = catEditName.trim()
+    if (!trimmedName) {
+      setCatEditError("El nombre no puede estar vacío.")
+      return
+    }
+    if (trimmedName === catEditTarget.name) {
+      setCatEditOpen(false)
+      return
+    }
+    setCatEditBusy(true)
+    setCatEditError("")
+    try {
+      const updated = await updateCategory(activeServer, catEditTarget.id, trimmedName)
+      setCategories((prev) =>
+        prev.map((cat) => (cat.id === catEditTarget.id ? { ...cat, name: updated.name } : cat)),
+      )
+      setCatEditOpen(false)
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 409) {
+        setCatEditError("Ya existe una categoría con ese nombre.")
+      } else {
+        setCatEditError(friendlyError(err))
+      }
+    } finally {
+      setCatEditBusy(false)
+    }
+  }
+
+  const openDeleteCategory = (cat: { id: string; name: string }) => {
+    setCatDeleteTarget(cat)
+    setCatDeleteError("")
+    setCatDeleteOpen(true)
+  }
+
+  const handleDeleteCategory = async () => {
+    if (!catDeleteTarget || !isRealServerId(activeServer)) return
+    setCatDeleteBusy(true)
+    setCatDeleteError("")
+    try {
+      await deleteCategory(activeServer, catDeleteTarget.id)
+      // Move the category's channels to the "General" section
+      setCategories((prev) => {
+        const deleted = prev.find((c) => c.id === catDeleteTarget.id)
+        const orphanChannels = (deleted?.channels ?? []).map((ch) => ({ ...ch, categoryId: null }))
+        const without = prev.filter((c) => c.id !== catDeleteTarget.id)
+        if (orphanChannels.length === 0) return without
+        // Place orphans in the General section (position === -1 or name === "General")
+        const hasGeneral = without.some((c) => c.name === "General" || c.position === -1)
+        if (hasGeneral) {
+          return without.map((c) =>
+            c.name === "General" || c.position === -1
+              ? { ...c, channels: [...c.channels, ...orphanChannels] }
+              : c,
+          )
+        }
+        // No General section yet — create one
+        return [
+          { id: `${activeServer}:general`, name: "General", position: -1, channels: orphanChannels },
+          ...without,
+        ]
+      })
+      setCatDeleteOpen(false)
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 403) {
+        setCatDeleteError("No tenés permisos para eliminar categorías.")
+      } else {
+        setCatDeleteError(friendlyError(err))
+      }
+    } finally {
+      setCatDeleteBusy(false)
     }
   }
 
@@ -2532,21 +2726,59 @@ export default function ChatScreen() {
               </Text>
             </View>
           ) : null}
-          {categories.map((cat) => (
+          {/* HU-4: "Crear categoría" button for admins, above the category list */}
+          {canManageChannels ? (
+            <PressableScale
+              onPress={openCreateCategory}
+              accessibilityLabel="Crear categoría"
+              hoverStyle={{ backgroundColor: "rgba(255,255,255,0.08)" }}
+              style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 12, paddingVertical: 8 }}
+            >
+              <Ionicons name="folder-open-outline" size={13} color="#8DA8AC" />
+              <Text style={{ color: "#8DA8AC", fontSize: 11, fontWeight: "600" }}>Crear categoría</Text>
+            </PressableScale>
+          ) : null}
+          {categories.map((cat) => {
+            // A "real" category has a backend UUID id; the synthetic "General"
+            // section (uncategorized channels) uses a composite id like "uuid:general".
+            const isRealCategory = UUID_RE.test(cat.id)
+            return (
             <View key={cat.id}>
               <View style={{ paddingHorizontal: 12, paddingTop: 12, paddingBottom: 4, flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
                 <Text style={{ color: "#8DA8AC", fontWeight: "700", textTransform: "uppercase", fontSize: 9.5, letterSpacing: 1.3 }}>
                   {cat.name}
                 </Text>
-                {isOwner && isRealServerId(activeServer) ? (
-                  <PressableScale
-                    onPress={openCreateChannel}
-                    accessibilityLabel="Crear canal"
-                    hoverStyle={{ backgroundColor: "rgba(255,255,255,0.12)" }}
-                    style={{ padding: iconBtnPad, borderRadius: 6 }}
-                  >
-                    <Ionicons name="add" size={14} color="#8DA8AC" />
-                  </PressableScale>
+                {canManageChannels ? (
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 2 }}>
+                    {isRealCategory ? (
+                      <>
+                        <PressableScale
+                          onPress={() => openEditCategory(cat)}
+                          accessibilityLabel={`Editar categoría ${cat.name}`}
+                          hoverStyle={{ backgroundColor: "rgba(255,255,255,0.12)" }}
+                          style={{ padding: iconBtnPad, borderRadius: 6 }}
+                        >
+                          <Ionicons name="pencil-outline" size={11} color="#8DA8AC" />
+                        </PressableScale>
+                        <PressableScale
+                          onPress={() => openDeleteCategory(cat)}
+                          accessibilityLabel={`Eliminar categoría ${cat.name}`}
+                          hoverStyle={{ backgroundColor: "rgba(255,127,114,0.14)" }}
+                          style={{ padding: iconBtnPad, borderRadius: 6 }}
+                        >
+                          <Ionicons name="trash-outline" size={11} color="#FF9E94" />
+                        </PressableScale>
+                      </>
+                    ) : null}
+                    <PressableScale
+                      onPress={() => openCreateChannel(isRealCategory ? cat.id : null)}
+                      accessibilityLabel="Crear canal"
+                      hoverStyle={{ backgroundColor: "rgba(255,255,255,0.12)" }}
+                      style={{ padding: iconBtnPad, borderRadius: 6 }}
+                    >
+                      <Ionicons name="add" size={14} color="#8DA8AC" />
+                    </PressableScale>
+                  </View>
                 ) : null}
               </View>
               {cat.channels.map((ch) => {
@@ -2603,7 +2835,7 @@ export default function ChatScreen() {
                     >
                       {ch.name}
                     </Text>
-                    {isOwner && isRealServerId(activeServer) && active ? (
+                    {canManageChannels && active ? (
                       <View style={{ flexDirection: "row", gap: 2 }}>
                         <PressableScale
                           onPress={() => handleMoveChannel(ch.id, "up")}
@@ -2690,7 +2922,7 @@ export default function ChatScreen() {
                 )
               })}
             </View>
-          ))}
+          )})}
         </ScrollView>
 
         {voice.dropNotice ? (
@@ -3726,8 +3958,48 @@ export default function ChatScreen() {
           placeholderTextColor="#5E7E82"
           maxLength={256}
           autoCapitalize="none"
-          style={[FIELD, { marginBottom: 18 }]}
+          style={[FIELD, { marginBottom: 14 }]}
         />
+
+        {/* HU-4: category selector — move channel between categories */}
+        <Text style={LABEL}>Categoría</Text>
+        {(() => {
+          const effectiveCatId = editChCategoryId === "UNSET" ? (editChTarget?.categoryId ?? null) : editChCategoryId
+          const noneSelected = effectiveCatId === null
+          const realCats = categories.filter((c) => UUID_RE.test(c.id))
+          return (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 18 }}>
+              <View style={{ flexDirection: "row", gap: 6 }}>
+                <PressableScale
+                  onPress={() => setEditChCategoryId(null)}
+                  style={{
+                    paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, borderWidth: 1.5,
+                    borderColor: noneSelected ? "#37D6C0" : "#1A3A3A",
+                    backgroundColor: noneSelected ? "rgba(55,214,192,0.12)" : "transparent",
+                  }}
+                >
+                  <Text style={{ color: noneSelected ? "#E6F3F3" : "#8DA8AC", fontSize: 12, fontWeight: "600" }}>Sin categoría</Text>
+                </PressableScale>
+                {realCats.map((c) => {
+                  const sel = effectiveCatId === c.id
+                  return (
+                    <PressableScale
+                      key={c.id}
+                      onPress={() => setEditChCategoryId(c.id)}
+                      style={{
+                        paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, borderWidth: 1.5,
+                        borderColor: sel ? "#37D6C0" : "#1A3A3A",
+                        backgroundColor: sel ? "rgba(55,214,192,0.12)" : "transparent",
+                      }}
+                    >
+                      <Text style={{ color: sel ? "#E6F3F3" : "#8DA8AC", fontSize: 12, fontWeight: "600" }}>{c.name}</Text>
+                    </PressableScale>
+                  )
+                })}
+              </View>
+            </ScrollView>
+          )
+        })()}
 
         <PressableScale
           onPress={handleEditChannel}
@@ -3822,6 +4094,39 @@ export default function ChatScreen() {
             <Text style={{ color: createChType === "voice" ? "#E6F3F3" : "#8DA8AC", fontSize: 11, marginTop: 2 }}>Voz</Text>
           </PressableScale>
         </View>
+
+        {/* HU-4: category selector for new channel */}
+        <Text style={LABEL}>Categoría</Text>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 18 }}>
+          <View style={{ flexDirection: "row", gap: 6 }}>
+            <PressableScale
+              onPress={() => setCreateChCategoryId(null)}
+              style={{
+                paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, borderWidth: 1.5,
+                borderColor: createChCategoryId === null ? "#37D6C0" : "#1A3A3A",
+                backgroundColor: createChCategoryId === null ? "rgba(55,214,192,0.12)" : "transparent",
+              }}
+            >
+              <Text style={{ color: createChCategoryId === null ? "#E6F3F3" : "#8DA8AC", fontSize: 12, fontWeight: "600" }}>Sin categoría</Text>
+            </PressableScale>
+            {categories.filter((c) => UUID_RE.test(c.id)).map((c) => {
+              const sel = createChCategoryId === c.id
+              return (
+                <PressableScale
+                  key={c.id}
+                  onPress={() => setCreateChCategoryId(c.id)}
+                  style={{
+                    paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, borderWidth: 1.5,
+                    borderColor: sel ? "#37D6C0" : "#1A3A3A",
+                    backgroundColor: sel ? "rgba(55,214,192,0.12)" : "transparent",
+                  }}
+                >
+                  <Text style={{ color: sel ? "#E6F3F3" : "#8DA8AC", fontSize: 12, fontWeight: "600" }}>{c.name}</Text>
+                </PressableScale>
+              )
+            })}
+          </View>
+        </ScrollView>
 
         <View style={{ flexDirection: "row", gap: 8 }}>
           <PressableScale
@@ -4232,6 +4537,136 @@ export default function ChatScreen() {
             ))}
           </ScrollView>
         )}
+      </ModalShell>
+
+      {/* HU-4: Create-category modal */}
+      <ModalShell
+        visible={catCreateOpen}
+        onClose={() => setCatCreateOpen(false)}
+        title="Crear categoría"
+      >
+        {catCreateError ? (
+          <View style={NOTICE_ERROR}>
+            <Text style={{ color: "#FF9E94", fontSize: 12.5 }}>{catCreateError}</Text>
+          </View>
+        ) : null}
+
+        <Text style={LABEL}>Nombre</Text>
+        <TextInput
+          value={catCreateName}
+          onChangeText={setCatCreateName}
+          placeholder="nombre-de-categoría"
+          placeholderTextColor="#5E7E82"
+          maxLength={100}
+          autoCapitalize="none"
+          style={[FIELD, { marginBottom: 18 }]}
+        />
+
+        <View style={{ flexDirection: "row", gap: 8 }}>
+          <PressableScale
+            onPress={() => setCatCreateOpen(false)}
+            style={{
+              flex: 1, alignItems: "center", paddingVertical: 12, borderRadius: 10,
+              borderWidth: 1, borderColor: "rgba(255,255,255,0.10)", backgroundColor: "rgba(255,255,255,0.06)",
+            }}
+          >
+            <Text style={{ color: "#E6F3F3", fontWeight: "700", fontSize: 14 }}>Cancelar</Text>
+          </PressableScale>
+          <PressableScale
+            onPress={handleCreateCategory}
+            disabled={catCreateBusy || !catCreateName.trim()}
+            style={[PRIMARY_BTN, { flex: 1, opacity: catCreateBusy || !catCreateName.trim() ? 0.5 : 1 }]}
+          >
+            {catCreateBusy ? (
+              <ActivityIndicator color="#04211D" />
+            ) : (
+              <Text style={PRIMARY_TXT}>Crear</Text>
+            )}
+          </PressableScale>
+        </View>
+      </ModalShell>
+
+      {/* HU-4: Edit-category modal */}
+      <ModalShell
+        visible={catEditOpen}
+        onClose={() => setCatEditOpen(false)}
+        title="Editar categoría"
+      >
+        {catEditError ? (
+          <View style={NOTICE_ERROR}>
+            <Text style={{ color: "#FF9E94", fontSize: 12.5 }}>{catEditError}</Text>
+          </View>
+        ) : null}
+
+        <Text style={LABEL}>Nombre</Text>
+        <TextInput
+          value={catEditName}
+          onChangeText={setCatEditName}
+          placeholder="nombre-de-categoría"
+          placeholderTextColor="#5E7E82"
+          maxLength={100}
+          autoCapitalize="none"
+          style={[FIELD, { marginBottom: 18 }]}
+        />
+
+        <PressableScale
+          onPress={handleEditCategory}
+          disabled={catEditBusy || !catEditName.trim()}
+          style={[PRIMARY_BTN, { opacity: catEditBusy || !catEditName.trim() ? 0.5 : 1 }]}
+        >
+          {catEditBusy ? (
+            <ActivityIndicator color="#04211D" />
+          ) : (
+            <Text style={PRIMARY_TXT}>Guardar</Text>
+          )}
+        </PressableScale>
+      </ModalShell>
+
+      {/* HU-4: Delete-category confirmation modal */}
+      <ModalShell
+        visible={catDeleteOpen}
+        onClose={() => setCatDeleteOpen(false)}
+        title="Eliminar categoría"
+      >
+        <Text style={{ color: "#8DA8AC", fontSize: 13, lineHeight: 19, marginBottom: 18 }}>
+          ¿Seguro que querés eliminar la categoría{" "}
+          <Text style={{ color: "#E6F3F3", fontWeight: "700" }}>
+            {catDeleteTarget?.name ?? ""}
+          </Text>
+          ? Los canales dentro de esta categoría pasarán a la sección general.
+        </Text>
+
+        {catDeleteError ? (
+          <View style={NOTICE_ERROR}>
+            <Text style={{ color: "#FF9E94", fontSize: 12.5 }}>{catDeleteError}</Text>
+          </View>
+        ) : null}
+
+        <View style={{ flexDirection: "row", gap: 8 }}>
+          <PressableScale
+            onPress={() => setCatDeleteOpen(false)}
+            style={{
+              flex: 1, alignItems: "center", paddingVertical: 12, borderRadius: 10,
+              borderWidth: 1, borderColor: "rgba(255,255,255,0.10)", backgroundColor: "rgba(255,255,255,0.06)",
+            }}
+          >
+            <Text style={{ color: "#E6F3F3", fontWeight: "700", fontSize: 14 }}>Cancelar</Text>
+          </PressableScale>
+          <PressableScale
+            onPress={handleDeleteCategory}
+            disabled={catDeleteBusy}
+            style={{
+              flex: 1, alignItems: "center", paddingVertical: 12, borderRadius: 10,
+              backgroundColor: "rgba(255,127,114,0.18)", opacity: catDeleteBusy ? 0.5 : 1,
+            }}
+          >
+            {catDeleteBusy ? (
+              <ActivityIndicator color="#FF7F72" />
+            ) : (
+              <Text style={{ color: "#FF7F72", fontWeight: "700", fontSize: 14 }}>Eliminar</Text>
+            )}
+          </PressableScale>
+        </View>
       </ModalShell>
 
       {/* Lost access to a server (HU-25: banned) */}
