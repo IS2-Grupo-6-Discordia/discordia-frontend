@@ -449,6 +449,18 @@ export async function updateAvatar(
   return toUser(res)
 }
 
+export async function requestEmailVerification(): Promise<void> {
+  await api("/auth/users/me/email/verification", { method: "POST" })
+}
+
+export async function confirmEmailVerification(code: string): Promise<User> {
+  const res = await api<BackendUser>("/auth/users/me/email/verification/confirm", {
+    method: "POST",
+    body: JSON.stringify({ code }),
+  })
+  return toUser(res)
+}
+
 export async function checkCurrentPassword(currentPassword: string): Promise<void> {
   await api("/auth/users/me/password/check", {
     method: "POST",
