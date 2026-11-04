@@ -43,7 +43,9 @@ export default function AccountHome() {
           icon="mail-outline"
           label="Email"
           value={user?.email ?? ""}
-          badge={user?.emailVerified === false ? <UnverifiedBadge /> : undefined}
+          footer={
+            user?.emailVerified === false ? <UnverifiedBadge onVerify={() => router.push("/(main)/account/verify-email")} /> : undefined
+          }
           actionLabel="Cambiar"
           onPress={() => router.push("/(main)/account/email")}
         />
