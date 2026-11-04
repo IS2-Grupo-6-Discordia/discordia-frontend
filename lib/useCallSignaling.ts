@@ -1,8 +1,8 @@
 import { useEffect, useRef } from "react"
-import { getVoiceRealtimeTicket } from "@/api/voice"
+import { getVoiceRealtimeTicket } from "@/lib/api/voice"
 import { RealtimeConnection } from "@/lib/realtime"
 import type { RealtimeMessage } from "@/lib/realtime"
-import type { CallSignalingMessage } from "@/api/types"
+import type { CallSignalingMessage } from "@/lib/api/types"
 
 // HU-50: listens to call.* messages on the voice realtime WebSocket and
 // dispatches them to the VoiceContext. Uses its own connection so the call

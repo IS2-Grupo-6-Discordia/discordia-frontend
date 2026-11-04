@@ -5,8 +5,8 @@ import { useRouter } from "expo-router"
 import PressableScale from "@/components/PressableScale"
 import Avatar from "@/components/Avatar"
 import { useVoice } from "@/context/VoiceContext"
-import { friendlyError } from "@/api/client"
-import { initials } from "@/api/auth"
+import { friendlyError } from "@/lib/api/client"
+import { initials } from "@/lib/api/auth"
 
 // HU-50: fullscreen modal that appears when another user calls. Shows the
 // caller's name, accept and reject buttons. Auto-dismisses after 35s (the
