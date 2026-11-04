@@ -88,6 +88,8 @@ import { useAuth } from "@/context/AuthContext"
 import { useVoice } from "@/context/VoiceContext"
 import type { VoiceParticipant } from "@/context/VoiceContext"
 import { useVoicePresence } from "@/lib/useVoicePresence"
+import { useChannelMessages } from "@/lib/useChannelMessages"
+import { getMyChannelPermissions } from "@/lib/api/servers"
 import { Ionicons } from "@expo/vector-icons"
 import Avatar from "@/components/Avatar"
 import StatusDot, { STATUS_LABELS } from "@/components/StatusDot"
@@ -272,7 +274,26 @@ const PRESENCE_REFRESH_MS = 15_000
 // Cada cuánto se consulta el resumen de no leídos (indicadores por canal y servidor) y los mensajes
 // nuevos del canal que se está mirando. Hasta que haya tiempo real para mensajes, se consulta.
 const UNREAD_REFRESH_MS = 8_000
-const MESSAGES_REFRESH_MS = 5_000
+// CA4: máximo de caracteres de un mensaje. Único valor compartido; se cuenta por
+// code points sobre el texto trimeado, igual que el backend (MAX_MESSAGE_LENGTH).
+const MESSAGE_MAX = 4000
+// A partir de acá mostramos el contador, para no distraer en mensajes cortos.
+const MESSAGE_COUNTER_FROM = MESSAGE_MAX - 200
+
+// El 422 del backend por contenido demasiado largo trae, en su detalle pydantic
+// (array de {msg}), un "...at most 4000 characters". Lo distinguimos de otros
+// 422 (p.ej. "at most 20 mentions per message") para no mostrar el aviso de
+// largo cuando el problema es otro.
+function isMaxLengthError(detail: unknown): boolean {
+  const text = Array.isArray(detail)
+    ? detail
+        .map((d) => (d && typeof d === "object" && "msg" in d ? String((d as { msg: unknown }).msg) : ""))
+        .join(" ")
+    : typeof detail === "string"
+      ? detail
+      : ""
+  return /at most \d+ characters|must be at most \d+ characters/i.test(text)
+}
 const REPORTS_REFRESH_MS = 30_000
 
 // Below this width (phones) the three columns don't fit: the screen shows one
@@ -473,6 +494,13 @@ export default function ChatScreen() {
   // from the backend's own role permissions (HU-4/HU-5 gating). Empty when the
   // user isn't an admin or it couldn't be confirmed -> falls back to owner-only.
   const [memberPermissions, setMemberPermissions] = useState<string[]>([])
+  // CA3: ¿puede el usuario enviar en el canal abierto? null = desconocido
+  // (todavía no se consultó, o la consulta falló por algo transitorio). En ese
+  // caso NO se deshabilita el campo: el POST igual se valida en el backend.
+  const [canSend, setCanSend] = useState<boolean | null>(null)
+  // El canal cuya respuesta de permisos vale ahora: descarta respuestas que
+  // llegan tarde de un canal anterior y evita deshabilitar el campo equivocado.
+  const permsChannelRef = useRef("")
 
   // Ownership transfer (HU-7)
   // Owner-initiated transfer modal.
@@ -598,9 +626,22 @@ export default function ChatScreen() {
       setMessages([])
       return
     }
+    let active = true
     getMessages(activeChannel)
-      .then(setMessages)
-      .catch(() => setMessages([]))
+      .then((msgs) => {
+        // Descartar una respuesta que llega tarde de un canal anterior: no puede
+        // meter mensajes en el canal abierto ahora.
+        if (active) setMessages(msgs)
+      })
+      .catch((err) => {
+        if (!active) return
+        // Un 423 del GET del historial activa la UI de servidor suspendido.
+        if (err instanceof ApiError && err.status === 423) setServerSuspended(activeServer, true)
+        setMessages([])
+      })
+    return () => {
+      active = false
+    }
   }, [activeChannel])
 
   // --- Indicadores de no leído (CA1 canal, CA2 servidor, CA3 menciones) ---
@@ -620,6 +661,32 @@ export default function ChatScreen() {
   viewedRef.current = viewedChannel
   // Mensajes que envié y que una respuesta anterior del historial todavía puede no traer.
   const sentIds = useRef(new Set<string>())
+  // Realtime frames, fallback-poll pages, reconnect recovery and the 60 s
+  // reconcile all land here: union by id (the backend version wins, and an
+  // optimistic send not yet echoed is kept), sorted by created_at. Returns the
+  // same array when nothing changed, to avoid a needless re-render.
+  const messagesRef = useRef<Message[]>(messages)
+  messagesRef.current = messages
+  const mergeMessages = useCallback((incoming: Message[]) => {
+    if (incoming.length === 0) return
+    setMessages((prev) => {
+      const byId = new Map<string, Message>()
+      for (const m of prev) byId.set(m.id, m)
+      for (const m of incoming) {
+        byId.set(m.id, m)
+        sentIds.current.delete(m.id)
+      }
+      // Comparar por fecha real: POST, GET y messages.created podrían serializar
+      // created_at con formatos distintos, así que no se ordena como texto.
+      const merged = [...byId.values()].sort((a, b) => {
+        const ta = a.createdAt ? Date.parse(a.createdAt) : 0
+        const tb = b.createdAt ? Date.parse(b.createdAt) : 0
+        return ta - tb
+      })
+      const same = merged.length === prev.length && merged.every((m, i) => m.id === prev[i]?.id)
+      return same ? prev : merged
+    })
+  }, [])
 
   useEffect(() => {
     if (!realServerIds) {
@@ -650,31 +717,10 @@ export default function ChatScreen() {
     markChannelRead(viewedChannel).catch(() => undefined)
   }, [viewedChannel, messages.length])
 
-  // Mensajes nuevos de otros en el canal que se está mirando.
-  useEffect(() => {
-    if (!viewedChannel) return
-    let active = true
-    const timer = setInterval(() => {
-      getMessages(viewedChannel)
-        .then((list) => {
-          if (!active) return
-          const known = new Set(list.map((m) => m.id))
-          for (const id of known) sentIds.current.delete(id)
-          setMessages((prev) => {
-            const pending = prev.filter((m) => sentIds.current.has(m.id) && !known.has(m.id))
-            const next = [...list, ...pending]
-            const same =
-              next.length === prev.length && next.every((m, i) => m.id === prev[i]?.id)
-            return same ? prev : next
-          })
-        })
-        .catch(() => undefined)
-    }, MESSAGES_REFRESH_MS)
-    return () => {
-      active = false
-      clearInterval(timer)
-    }
-  }, [viewedChannel])
+  // Los mensajes nuevos del canal abierto llegan por el socket de tiempo real
+  // (useChannelMessages, más abajo): entrega en vivo, reconciliación cada 60 s y
+  // polling de respaldo solo mientras el socket NO está abierto. No se pollea
+  // acá para no duplicar.
 
   // Lo que se pinta para un canal o servidor: el resumen del backend, y para el servidor de
   // ejemplo los valores de demostración que ya traía.
@@ -743,6 +789,13 @@ export default function ChatScreen() {
   }, [activeServer])
 
   const channel = categories.flatMap((c) => c.channels).find((c) => c.id === activeChannel)
+  // CA3/CA4: estado del compositor del canal abierto. `sendDisabled` solo cuando
+  // sabemos que no puede (canSend === false); un permiso desconocido (null, p.ej.
+  // una consulta que falló transitoriamente) NO deshabilita. El largo se cuenta
+  // por code points sobre el texto trimeado, igual que el backend.
+  const sendDisabled = canSend === false
+  const messageLength = [...input.trim()].length
+  const messageTooLong = messageLength > MESSAGE_MAX
 
   // Owner of the active server (derived): only the owner may initiate a transfer.
   // Recomputes whenever `servers` refreshes, so after an accepted transfer the
@@ -1368,6 +1421,14 @@ export default function ChatScreen() {
   const handleSend = async () => {
     const text = input.trim()
     if (!text) return
+    // CA3: si ya sabemos que no puede enviar, no intentamos (el campo está
+    // deshabilitado igual). CA4: bloqueamos un texto que excede el máximo,
+    // contando por code points sobre el texto trimeado, igual que el backend.
+    if (canSend === false) return
+    if ([...text].length > MESSAGE_MAX) {
+      setBannerError(`Máximo ${MESSAGE_MAX} caracteres`)
+      return
+    }
     try {
       const msg = await sendMessage(activeChannel, text, user?.name, {
         serverId: activeServer,
@@ -1379,9 +1440,30 @@ export default function ChatScreen() {
         ),
       })
       sentIds.current.add(msg.id)
-      setMessages((prev) => [...prev, msg])
+      // Dedupe by id: the realtime messages.created echo for this same message can land
+      // (via mergeMessages) before this awaited POST resolves, so a raw append would show
+      // the sender's own message twice. Skip the append when the id is already present.
+      setMessages((prev) => (prev.some((m) => m.id === msg.id) ? prev : [...prev, msg]))
       setInput("")
     } catch (err) {
+      // CA4: solo el 422 por largo máximo muestra ese aviso; cualquier otro 422
+      // (p.ej. demasiadas menciones) va por el error general.
+      if (err instanceof ApiError && err.status === 422) {
+        if (isMaxLengthError(err.detail)) setBannerError(`Máximo ${MESSAGE_MAX} caracteres`)
+        else setBannerError(friendlyError(err))
+        return
+      }
+      // Suspensión: un 423 del POST activa la UI existente.
+      if (err instanceof ApiError && err.status === 423) {
+        setServerSuspended(activeServer, true)
+        return
+      }
+      // CA3: perdió el permiso con el canal abierto → deshabilitar sin recargar.
+      if (err instanceof ApiError && err.status === 403) {
+        setCanSend(false)
+        setBannerError("No tenés permiso para enviar mensajes en este canal.")
+        return
+      }
       setBannerError(friendlyError(err))
     }
   }
@@ -1672,6 +1754,65 @@ export default function ChatScreen() {
       dropServerLocally(serverId, name ? `Fuiste baneado de ${name}.` : "Fuiste baneado de un servidor.")
     },
   )
+
+  // CA1: mensajes del canal abierto en tiempo real. Solo un canal real (UUID) de
+  // un servidor real; los canales mock/ejemplo no abren socket ni consultan nada.
+  const realOpenChannel =
+    isRealServerId(activeServer) && UUID_RE.test(activeChannel)
+      ? { id: activeChannel, serverId: activeServer }
+      : null
+  const { status: messagesStatus } = useChannelMessages({
+    channel: realOpenChannel,
+    enabled: !!user && !!process.env.EXPO_PUBLIC_API_URL,
+    onMessages: mergeMessages,
+    onServerSuspended: (serverId) => setServerSuspended(serverId, true),
+    getKnownMessageIds: () => messagesRef.current.map((m) => m.id),
+  })
+
+  // CA3: ¿puede enviar en el canal abierto? Se consulta al abrir el canal; si
+  // falló por algo transitorio (no 403/423) se reintenta al reconectar el socket
+  // (messagesStatus). Al cambiar de canal se resetea y se descartan las
+  // respuestas que lleguen tarde de un canal anterior (permsChannelRef).
+  useEffect(() => {
+    const real = isRealServerId(activeServer) && UUID_RE.test(activeChannel)
+    if (!real) {
+      permsChannelRef.current = ""
+      setCanSend(null)
+      return
+    }
+    const channelId = activeChannel
+    // Reset solo cuando cambia el canal (no en un reintento), para no pisar un
+    // valor conocido ni meter una respuesta vieja en el canal nuevo.
+    if (permsChannelRef.current !== channelId) {
+      permsChannelRef.current = channelId
+      setCanSend(null)
+    }
+    let active = true
+    const fetchPerms = () => {
+      getMyChannelPermissions(activeServer, channelId)
+        .then((perms) => {
+          // Puede volver false->true: si recuperó el permiso, se habilita sin recargar.
+          if (active && permsChannelRef.current === channelId) setCanSend(perms.canSend)
+        })
+        .catch((err) => {
+          if (!active || permsChannelRef.current !== channelId) return
+          // 423: el servidor está suspendido → UI existente, NO "no tenés permiso".
+          if (err instanceof ApiError && err.status === 423) setServerSuspended(activeServer, true)
+          // 403: perdió el permiso → deshabilitar.
+          else if (err instanceof ApiError && err.status === 403) setCanSend(false)
+          // Transitorio (timeout/5xx/red): mantené el valor anterior, no lo pases a false.
+        })
+    }
+    // Al abrir el canal y, con el canal abierto, cada 60 s (junto a la
+    // reconciliación), por si recupera el permiso. Un reconnect (messagesStatus)
+    // también reintenta.
+    fetchPerms()
+    const timer = setInterval(fetchPerms, 60_000)
+    return () => {
+      active = false
+      clearInterval(timer)
+    }
+  }, [activeServer, activeChannel, messagesStatus])
 
   // The call we are in keeps using LiveKit's own events (instant mute changes,
   // "(vos)"); every other voice channel shows the presence from the service.
@@ -2913,21 +3054,57 @@ export default function ChatScreen() {
             <TextInput
               value={input}
               onChangeText={setInput}
-              placeholder={`Escribí en #${channel?.name ?? ""}`}
+              editable={!sendDisabled}
+              placeholder={
+                sendDisabled
+                  ? "No tenés permiso para enviar mensajes en este canal."
+                  : `Escribí en #${channel?.name ?? ""}`
+              }
               placeholderTextColor="#5E7E82"
-              style={{ flex: 1, color: "#E6F3F3", fontSize: 12 }}
+              style={{ flex: 1, color: "#E6F3F3", fontSize: 12, opacity: sendDisabled ? 0.5 : 1 }}
               onSubmitEditing={handleSend}
               returnKeyType="send"
             />
             <PressableScale
               onPress={handleSend}
-              pressedScale={0.92}
-              style={{ paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 }}
+              pressedScale={sendDisabled || messageTooLong ? 1 : 0.92}
+              style={{
+                paddingHorizontal: 6,
+                paddingVertical: 2,
+                borderRadius: 6,
+                opacity: sendDisabled || messageTooLong ? 0.4 : 1,
+              }}
               hoverStyle={{ backgroundColor: "rgba(55,214,192,0.12)" }}
             >
               <Text style={{ color: "#37D6C0", fontWeight: "600", fontSize: 11 }}>Enviar</Text>
             </PressableScale>
           </View>
+          {/* CA3: explicación cuando no puede enviar. CA4: contador y aviso de largo. */}
+          {sendDisabled || messageLength >= MESSAGE_COUNTER_FROM ? (
+            <View
+              style={{
+                flexDirection: "row",
+                justifyContent: "space-between",
+                alignItems: "center",
+                marginTop: 4,
+                paddingHorizontal: 4,
+                gap: 8,
+              }}
+            >
+              <Text style={{ color: sendDisabled || messageTooLong ? "#FF9B8A" : "#8DA8AC", fontSize: 10.5, flexShrink: 1 }}>
+                {sendDisabled
+                  ? "No tenés permiso para enviar mensajes en este canal."
+                  : messageTooLong
+                    ? `Máximo ${MESSAGE_MAX} caracteres`
+                    : ""}
+              </Text>
+              {!sendDisabled && messageLength >= MESSAGE_COUNTER_FROM ? (
+                <Text style={{ color: messageTooLong ? "#FF6B6B" : "#8DA8AC", fontSize: 10.5 }}>
+                  {messageLength}/{MESSAGE_MAX}
+                </Text>
+              ) : null}
+            </View>
+          ) : null}
         </View>
       </View>
 
