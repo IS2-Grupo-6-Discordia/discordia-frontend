@@ -12,6 +12,7 @@ export interface User {
   status?: UserStatus
   createdAt?: string
   hasPassword?: boolean
+  emailVerified?: boolean
   passwordChangedAt?: string | null
   twoFactorEnabled?: boolean
 }
