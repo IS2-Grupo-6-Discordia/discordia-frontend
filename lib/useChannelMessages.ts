@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { ApiError } from "@/api/client"
+import { ApiError } from "@/lib/api/client"
 import {
   getMessages,
   getMessagesRealtimeTicket,
   hydrateAuthors,
   type BackendMessage,
-} from "@/api/messages"
-import type { Message } from "@/api/types"
+} from "@/lib/api/messages"
+import type { Message } from "@/lib/api/types"
 import { RealtimeConnection } from "@/lib/realtime"
 import type { RealtimeMessage, RealtimeStatus } from "@/lib/realtime"
 
