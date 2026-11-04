@@ -14,10 +14,10 @@ import { useRouter } from "expo-router"
 import { Ionicons } from "@expo/vector-icons"
 import { useAuth } from "@/context/AuthContext"
 import PressableScale from "@/components/PressableScale"
-import { getMe, updateProfile, updateAvatar } from "@/api/auth"
-import { ApiError, friendlyError } from "@/api/client"
+import { getMe, updateProfile, updateAvatar } from "@/lib/api/auth"
+import { ApiError, friendlyError } from "@/lib/api/client"
 import Avatar from "@/components/Avatar"
-import type { User } from "@/api/types"
+import type { User } from "@/lib/api/types"
 
 const NAME_MAX = 80
 const BIO_MAX = 300

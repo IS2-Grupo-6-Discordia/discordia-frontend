@@ -3,7 +3,7 @@ import { View, Text, TouchableOpacity, Platform } from "react-native"
 import { useAuth } from "@/context/AuthContext"
 import UserMenu from "@/components/UserMenu"
 import SessionSplash from "@/components/SessionSplash"
-import { useWakeState } from "@/api/wake"
+import { useWakeState } from "@/lib/api/wake"
 import { VoiceProvider } from "@/context/VoiceContext"
 
 

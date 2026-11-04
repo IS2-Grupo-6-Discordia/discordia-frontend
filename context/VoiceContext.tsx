@@ -1,9 +1,9 @@
 import { createContext, useContext, useState, useCallback, useEffect, useRef } from "react"
 import type { ReactNode } from "react"
 import { Platform } from "react-native"
-import { joinVoiceChannel } from "@/api/voice"
-import { getUsersBatch, initials } from "@/api/auth"
-import { friendlyError } from "@/api/client"
+import { joinVoiceChannel } from "@/lib/api/voice"
+import { getUsersBatch, initials } from "@/lib/api/auth"
+import { friendlyError } from "@/lib/api/client"
 import { useAuth } from "@/context/AuthContext"
 import { playJoinSound } from "@/lib/joinSound"
 import {

@@ -7,6 +7,7 @@ import {
   ScrollView,
   FlatList,
   Platform,
+  Pressable,
   Keyboard,
   ActivityIndicator,
   Image,
@@ -69,7 +70,7 @@ import {
   withoutChannel,
   extractMentionIds,
   EMPTY_UNREAD,
-} from "@/api"
+} from "@/lib/api"
 import type {
   Server,
   Category,
@@ -84,9 +85,9 @@ import type {
   ServerBan,
   MyServerPermissions,
   UnreadSummary,
-} from "@/api/types"
-import { hasServerPermission } from "@/api/types"
-import { ApiError, friendlyError } from "@/api/client"
+} from "@/lib/api/types"
+import { hasServerPermission } from "@/lib/api/types"
+import { ApiError, friendlyError } from "@/lib/api/client"
 import { useAuth } from "@/context/AuthContext"
 import { useVoice } from "@/context/VoiceContext"
 import type { VoiceParticipant } from "@/context/VoiceContext"
@@ -97,6 +98,9 @@ import StatusDot, { STATUS_LABELS } from "@/components/StatusDot"
 import ModalShell from "@/components/ModalShell"
 import PressableScale from "@/components/PressableScale"
 import DeleteServerModal from "@/components/DeleteServerModal"
+import ReportModal from "@/components/ReportModal"
+import { getPendingReportCount, type ReportTarget } from "@/lib/api/reports"
+import ServerReportsModal from "@/components/ServerReportsModal"
 import ServerSettingsModal from "@/components/ServerSettingsModal"
 import RolesModal from "@/components/RolesModal"
 import RolePermissionsModal from "@/components/RolePermissionsModal"
@@ -273,6 +277,7 @@ const PRESENCE_REFRESH_MS = 15_000
 // nuevos del canal que se está mirando. Hasta que haya tiempo real para mensajes, se consulta.
 const UNREAD_REFRESH_MS = 8_000
 const MESSAGES_REFRESH_MS = 5_000
+const REPORTS_REFRESH_MS = 30_000
 
 // Below this width (phones) the three columns don't fit: the screen shows one
 // pane at a time (channels or chat) and the member list slides over the content.
@@ -321,6 +326,7 @@ export default function ChatScreen() {
   // abbreviation or a photo.
   const [tooltip, setTooltip] = useState<{ label: string; y: number } | null>(null)
   const [hoveredMember, setHoveredMember] = useState<string | null>(null)
+  const [hoveredMessage, setHoveredMessage] = useState<string | null>(null)
 
   const showTooltip = (label: string) => (e: any) => {
     // Touch screens fire mouseenter on tap but never mouseleave: the tooltip
@@ -511,6 +517,9 @@ export default function ChatScreen() {
   // active server decide which controls show up; the backend checks again.
   const [myPerms, setMyPerms] = useState<MyServerPermissions | null>(null)
   const [banTarget, setBanTarget] = useState<{ id: string; name: string } | null>(null)
+  const [reportTarget, setReportTarget] = useState<ReportTarget | null>(null)
+  const [serverReportsOpen, setServerReportsOpen] = useState(false)
+  const [pendingReports, setPendingReports] = useState(0)
   const [banReason, setBanReason] = useState("")
   const [banBusy, setBanBusy] = useState(false)
   const [banError, setBanError] = useState("")
@@ -823,6 +832,37 @@ export default function ChatScreen() {
   // Never on yourself or the owner. The role hierarchy (CA2) is only enforced by
   // the backend, which answers 403 with a clear message.
   const canBan = isRealServerId(activeServer) && hasServerPermission(myPerms, "ban_members")
+  const canModerate = canBan || (isRealServerId(activeServer) && hasServerPermission(myPerms, "kick_members"))
+
+  const refreshPendingReports = useCallback(() => {
+    if (!canModerate || !activeServer) return
+    getPendingReportCount(activeServer)
+      .then(setPendingReports)
+      .catch(() => undefined)
+  }, [canModerate, activeServer])
+
+  useEffect(() => {
+    setPendingReports(0)
+    if (!canModerate) return
+    refreshPendingReports()
+    const timer = setInterval(refreshPendingReports, REPORTS_REFRESH_MS)
+    return () => clearInterval(timer)
+  }, [canModerate, refreshPendingReports])
+
+  const reportMessage = (msg: Message) => {
+    if (!activeServer || !activeChannel || !msg.authorId) return
+    setReportTarget({
+      type: "message",
+      serverId: activeServer,
+      channelId: activeChannel,
+      messageId: msg.id,
+      userId: msg.authorId,
+      name: msg.author,
+      content: msg.text,
+    })
+  }
+  const canReportMessage = (msg: Message) =>
+    isRealServerId(activeServer) && isRealServerId(activeChannel) && !!msg.authorId && msg.authorId !== user?.id && !msg.system && !!msg.text.trim()
   const canBanMember = (memberId: string) =>
     canBan &&
     memberId !== user?.id &&
@@ -854,6 +894,15 @@ export default function ChatScreen() {
         icon: "ban-outline",
         tone: "danger",
         onPress: () => openBanModal(memberId, memberName),
+      })
+    }
+    if (isRealServerId(activeServer) && memberId !== user?.id) {
+      actions.push({
+        key: "report",
+        label: "Reportar",
+        icon: "flag-outline",
+        tone: "danger",
+        onPress: () => setReportTarget({ type: "user", serverId: activeServer, userId: memberId, name: memberName }),
       })
     }
     return actions
@@ -2396,6 +2445,50 @@ export default function ChatScreen() {
               <Ionicons name="exit-outline" size={13} color="#8DA8AC" />
               <Text style={{ color: "#8DA8AC", fontSize: 11.5, fontWeight: "600" }}>Salir</Text>
             </PressableScale>
+            {!isOwner && isRealServerId(activeServer) ? (
+              <PressableScale
+                onPress={() => setReportTarget({ type: "server", serverId: activeServer, name: activeServerName })}
+                accessibilityLabel="Reportar servidor"
+                hoverStyle={{ backgroundColor: "rgba(255,127,114,0.14)" }}
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  paddingHorizontal: 10,
+                  paddingVertical: 6,
+                  borderRadius: 8,
+                  backgroundColor: "rgba(255,255,255,0.05)",
+                }}
+              >
+                <Ionicons name="flag-outline" size={13} color="#8DA8AC" />
+              </PressableScale>
+            ) : null}
+            {canModerate ? (
+              <PressableScale
+                onPress={() => setServerReportsOpen(true)}
+                accessibilityLabel={pendingReports > 0 ? `Moderación del servidor, ${pendingReports} reportes pendientes` : "Moderación del servidor"}
+                hoverStyle={{ backgroundColor: "rgba(255,127,114,0.30)" }}
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: 5,
+                  paddingHorizontal: 10,
+                  paddingVertical: 5,
+                  borderRadius: 8,
+                  backgroundColor: "rgba(255,127,114,0.18)",
+                  borderWidth: 1,
+                  borderColor: "rgba(255,127,114,0.55)",
+                }}
+              >
+                <Ionicons name="shield-outline" size={13} color="#FF7F72" />
+                <Text style={{ color: "#FF7F72", fontSize: 11.5, fontWeight: "700" }}>Moderación</Text>
+                {pendingReports > 0 ? (
+                  <View style={{ minWidth: 17, height: 17, paddingHorizontal: 4, borderRadius: 9999, alignItems: "center", justifyContent: "center", backgroundColor: "#FF7F72" }}>
+                    <Text style={{ color: "#04211D", fontSize: 10, fontWeight: "800" }}>{pendingReports > 99 ? "99+" : pendingReports}</Text>
+                  </View>
+                ) : null}
+              </PressableScale>
+            ) : null}
             {canBan ? (
               <PressableScale
                 onPress={openBansModal}
@@ -2924,8 +3017,31 @@ export default function ChatScreen() {
             const goToAuthor = msg.authorId
               ? () => router.push(`/users/${msg.authorId}`)
               : undefined
+            const reportable = canReportMessage(msg)
+            const showReport = reportable && Platform.OS === "web"
             return (
-            <View style={{ flexDirection: "row", gap: 10 }}>
+            <Pressable
+              onLongPress={reportable ? () => reportMessage(msg) : undefined}
+              delayLongPress={350}
+              accessibilityActions={reportable ? [{ name: "report", label: "Reportar mensaje" }] : undefined}
+              onAccessibilityAction={(e) => {
+                if (e.nativeEvent.actionName === "report") reportMessage(msg)
+              }}
+              {...(Platform.OS === "web"
+                ? {
+                    onHoverIn: () => setHoveredMessage(msg.id),
+                    onHoverOut: () => setHoveredMessage((h) => (h === msg.id ? null : h)),
+                  }
+                : {})}
+              style={{
+                flexDirection: "row",
+                gap: 10,
+                borderRadius: 8,
+                marginHorizontal: -6,
+                paddingHorizontal: 6,
+                backgroundColor: Platform.OS === "web" && hoveredMessage === msg.id ? "rgba(255,255,255,0.03)" : "transparent",
+              }}
+            >
               <TouchableOpacity
                 onPress={goToAuthor}
                 disabled={!goToAuthor}
@@ -2951,6 +3067,17 @@ export default function ChatScreen() {
                   ) : null}
                   <Text style={{ color: "#8DA8AC", fontSize: 10 }}>{msg.time}</Text>
                   {msg.edited ? <Text style={{ color: "#8DA8AC", fontSize: 9.5 }}>(editado)</Text> : null}
+                  {showReport ? (
+                    <PressableScale
+                      onPress={() => reportMessage(msg)}
+                      accessibilityLabel="Reportar mensaje"
+                      hoverStyle={{ backgroundColor: "rgba(255,127,114,0.18)" }}
+                      style={{ marginLeft: "auto", flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6, opacity: hoveredMessage === msg.id ? 1 : 0 }}
+                    >
+                      <Ionicons name="flag-outline" size={11} color="#FF9E94" />
+                      <Text style={{ color: "#FF9E94", fontSize: 10.5, fontWeight: "700" }}>Reportar</Text>
+                    </PressableScale>
+                  ) : null}
                 </View>
                 <Text style={{ color: "#E6F3F3", marginTop: 2, fontSize: 12.5 }}>
                   {msg.mentionRole ? (
@@ -2987,7 +3114,7 @@ export default function ChatScreen() {
                   </View>
                 ) : null}
               </View>
-            </View>
+            </Pressable>
             )
           }}
         />
@@ -3941,6 +4068,17 @@ export default function ChatScreen() {
       </ModalShell>
 
       {/* Delete-server confirmation (HU-6 / #97) */}
+      <ReportModal target={reportTarget} onClose={() => setReportTarget(null)} />
+      <ServerReportsModal
+        visible={serverReportsOpen}
+        serverId={activeServer}
+        serverName={activeServerName}
+        nameOf={(id) => roles.flatMap((r) => r.members).find((m) => m.id === id)?.name ?? null}
+        channelNameOf={(id) => categories.flatMap((c) => c.channels).find((c) => c.id === id)?.name ?? null}
+        onClose={() => setServerReportsOpen(false)}
+        onChanged={refreshPendingReports}
+      />
+
       <DeleteServerModal
         visible={deleteSrvOpen}
         serverName={activeServerName}

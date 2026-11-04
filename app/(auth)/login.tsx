@@ -11,13 +11,14 @@ import {
 import { useLocalSearchParams, useRouter } from "expo-router"
 import { Ionicons } from "@expo/vector-icons"
 import { useAuth } from "@/context/AuthContext"
-import { login, loginWithGoogle } from "@/api/auth"
-import { useWakeProgress, useWakeState, wakeBackends } from "@/api/wake"
-import { ApiError, friendlyError } from "@/api/client"
+import { TwoFactorRequired, login, loginWithGoogle, type TwoFactorLoginResult } from "@/lib/api/auth"
+import { useWakeProgress, useWakeState, wakeBackends } from "@/lib/api/wake"
+import { ApiError, friendlyError } from "@/lib/api/client"
 import { safeRedirect } from "@/lib/safeRedirect"
 import PressableScale from "@/components/PressableScale"
 import AuthField from "@/components/AuthField"
 import GoogleSignInButton, { isGoogleSignInAvailable } from "@/components/GoogleSignInButton"
+import TwoFactorStep from "@/components/TwoFactorStep"
 
 const GOOGLE_UNAVAILABLE =
   "No pudimos conectarnos con Google. Ingresá con tu email y contraseña o probá de nuevo en un rato."
@@ -39,6 +40,15 @@ export default function LoginScreen() {
   const [googleLoading, setGoogleLoading] = useState(false)
   const [googleNotice, setGoogleNotice] = useState("")
   const [googleAttempt, setGoogleAttempt] = useState(0)
+  const [challenge, setChallenge] = useState<string | null>(null)
+
+  const finishTwoFactor = (result: TwoFactorLoginResult, next: "continue" | "regenerate") => {
+    clearSignedOutReason()
+    setUser(result.user)
+    setChallenge(null)
+    if (next === "regenerate") router.replace({ pathname: "/(main)/account/two-factor", params: { regenerate: "1" } })
+    else router.replace(safeRedirect(redirect))
+  }
 
   const handleGoogleCredential = async (idToken: string) => {
     setGoogleLoading(true)
@@ -53,6 +63,10 @@ export default function LoginScreen() {
       // param is still here. Validate it before trusting it.
       router.replace(safeRedirect(redirect))
     } catch (err) {
+      if (err instanceof TwoFactorRequired) {
+        setChallenge(err.challengeToken)
+        return
+      }
       const unavailable =
         (err instanceof ApiError && err.status >= 500) ||
         err instanceof TypeError ||
@@ -80,6 +94,11 @@ export default function LoginScreen() {
       setUser(res.user)
       router.replace(safeRedirect(redirect))
     } catch (err) {
+      if (err instanceof TwoFactorRequired) {
+        setChallenge(err.challengeToken)
+        setPassword("")
+        return
+      }
       if (err instanceof ApiError && err.status === 403) showSignedOutReason("suspended")
       else setError(friendlyError(err))
     } finally {
@@ -108,6 +127,10 @@ export default function LoginScreen() {
             borderColor: "rgba(255,255,255,0.13)",
           }}
         >
+          {challenge ? (
+            <TwoFactorStep challengeToken={challenge} onCancel={() => setChallenge(null)} onDone={finishTwoFactor} />
+          ) : (
+          <>
           {/* Brand */}
           <View style={{ alignItems: "center", marginBottom: 22 }}>
             <View
@@ -374,6 +397,8 @@ export default function LoginScreen() {
               <Text style={{ color: "#37D6C0", fontWeight: "600", fontSize: 12 }}>Registrate</Text>
             </TouchableOpacity>
           </View>
+          </>
+          )}
         </View>
       </ScrollView>
     </KeyboardAvoidingView>

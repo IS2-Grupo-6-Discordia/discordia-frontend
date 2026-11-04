@@ -12,6 +12,9 @@ export interface User {
   status?: UserStatus
   createdAt?: string
   hasPassword?: boolean
+  emailVerified?: boolean
+  passwordChangedAt?: string | null
+  twoFactorEnabled?: boolean
 }
 
 // Another user's PUBLIC profile. Explicitly carries no private data (no email,
