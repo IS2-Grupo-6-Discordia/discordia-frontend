@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useState, useRef, useEffect } from "react"
 import { View, Text, Pressable, ActivityIndicator, useWindowDimensions } from "react-native"
 
 import { Ionicons } from "@expo/vector-icons"
@@ -43,6 +43,21 @@ export default function VoiceScreen() {
   const [layoutMenuOpen, setLayoutMenuOpen] = useState(false)
   // Phones: two smaller cards per row instead of one wide card each.
   const isNarrow = useWindowDimensions().width < 600
+
+  // HU-50: auto-navigate back when a private call ends (rejected, missed, or hung up).
+  const prevCallStatusRef = useRef(voice.callStatus)
+  useEffect(() => {
+    const prev = prevCallStatusRef.current
+    prevCallStatusRef.current = voice.callStatus
+    if (
+      prev !== "idle" &&
+      voice.callStatus === "idle" &&
+      !voice.call &&
+      voice.status === "idle"
+    ) {
+      if (router.canGoBack()) router.back()
+    }
+  }, [voice.callStatus, voice.call, voice.status])
 
   const handleToggleMic = async () => {
     setMicError("")

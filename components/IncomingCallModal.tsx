@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react"
 import { View, Text, Modal, Platform, ActivityIndicator } from "react-native"
 import { Ionicons } from "@expo/vector-icons"
+import { useRouter } from "expo-router"
 import PressableScale from "@/components/PressableScale"
 import Avatar from "@/components/Avatar"
 import { useVoice } from "@/context/VoiceContext"
@@ -15,6 +16,7 @@ const AUTO_DISMISS_MS = 35_000
 
 export default function IncomingCallModal() {
   const voice = useVoice()
+  const router = useRouter()
   const { call, callStatus } = voice
   const visible = callStatus === "ringing" && call?.direction === "incoming"
   const [error, setError] = useState("")
@@ -38,6 +40,7 @@ export default function IncomingCallModal() {
     setAccepting(true)
     try {
       await voice.acceptIncomingCall()
+      router.push("/(main)/voice")
     } catch (err) {
       setError(err instanceof Error ? err.message : friendlyError(err))
       setAccepting(false)
