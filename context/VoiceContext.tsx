@@ -1,14 +1,14 @@
 import { createContext, useContext, useState, useCallback, useEffect, useRef } from "react"
 import type { ReactNode } from "react"
 import { Platform } from "react-native"
-import { joinVoiceChannel } from "@/api/voice"
-import { initiateCall, acceptCall as apiAcceptCall, rejectCall as apiRejectCall, endCall as apiEndCall } from "@/api/calls"
-import { getUsersBatch, initials } from "@/api/auth"
-import { friendlyError } from "@/api/client"
+import { joinVoiceChannel } from "@/lib/api/voice"
+import { initiateCall, acceptCall as apiAcceptCall, rejectCall as apiRejectCall, endCall as apiEndCall } from "@/lib/api/calls"
+import { getUsersBatch, initials } from "@/lib/api/auth"
+import { friendlyError } from "@/lib/api/client"
 import { useAuth } from "@/context/AuthContext"
 import { playJoinSound } from "@/lib/joinSound"
 import { useCallSignaling } from "@/lib/useCallSignaling"
-import type { CallSignalingMessage } from "@/api/types"
+import type { CallSignalingMessage } from "@/lib/api/types"
 import {
   CameraError,
   connectVoiceRoom,

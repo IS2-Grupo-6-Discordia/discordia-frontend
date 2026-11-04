@@ -34,6 +34,9 @@ import {
   updateChannel,
   reorderChannels,
   createChannel,
+  createCategory,
+  updateCategory,
+  deleteCategory,
   startOwnershipTransfer,
   getPendingTransfer,
   acceptOwnershipTransfer,
@@ -56,6 +59,7 @@ import {
   getRoleMembers,
   ADMIN_PERMISSION,
   MANAGE_ROLES_PERMISSION,
+  MANAGE_CHANNELS_PERMISSION,
   CREATE_INVITE_PERMISSION,
   getMyServerPermissions,
   banMember,
@@ -66,7 +70,7 @@ import {
   withoutChannel,
   extractMentionIds,
   EMPTY_UNREAD,
-} from "@/api"
+} from "@/lib/api"
 import type {
   Server,
   Category,
@@ -81,13 +85,15 @@ import type {
   ServerBan,
   MyServerPermissions,
   UnreadSummary,
-} from "@/api/types"
-import { hasServerPermission } from "@/api/types"
-import { ApiError, friendlyError } from "@/api/client"
+} from "@/lib/api/types"
+import { hasServerPermission } from "@/lib/api/types"
+import { ApiError, friendlyError } from "@/lib/api/client"
 import { useAuth } from "@/context/AuthContext"
 import { useVoice } from "@/context/VoiceContext"
 import type { VoiceParticipant } from "@/context/VoiceContext"
 import { useVoicePresence } from "@/lib/useVoicePresence"
+import { useChannelMessages } from "@/lib/useChannelMessages"
+import { getMyChannelPermissions } from "@/lib/api/servers"
 import { Ionicons } from "@expo/vector-icons"
 import Avatar from "@/components/Avatar"
 import StatusDot, { STATUS_LABELS } from "@/components/StatusDot"
@@ -95,7 +101,7 @@ import ModalShell from "@/components/ModalShell"
 import PressableScale from "@/components/PressableScale"
 import DeleteServerModal from "@/components/DeleteServerModal"
 import ReportModal from "@/components/ReportModal"
-import { getPendingReportCount, type ReportTarget } from "@/api/reports"
+import { getPendingReportCount, type ReportTarget } from "@/lib/api/reports"
 import ServerReportsModal from "@/components/ServerReportsModal"
 import ServerSettingsModal from "@/components/ServerSettingsModal"
 import RolesModal from "@/components/RolesModal"
@@ -272,7 +278,26 @@ const PRESENCE_REFRESH_MS = 15_000
 // Cada cuánto se consulta el resumen de no leídos (indicadores por canal y servidor) y los mensajes
 // nuevos del canal que se está mirando. Hasta que haya tiempo real para mensajes, se consulta.
 const UNREAD_REFRESH_MS = 8_000
-const MESSAGES_REFRESH_MS = 5_000
+// CA4: máximo de caracteres de un mensaje. Único valor compartido; se cuenta por
+// code points sobre el texto trimeado, igual que el backend (MAX_MESSAGE_LENGTH).
+const MESSAGE_MAX = 4000
+// A partir de acá mostramos el contador, para no distraer en mensajes cortos.
+const MESSAGE_COUNTER_FROM = MESSAGE_MAX - 200
+
+// El 422 del backend por contenido demasiado largo trae, en su detalle pydantic
+// (array de {msg}), un "...at most 4000 characters". Lo distinguimos de otros
+// 422 (p.ej. "at most 20 mentions per message") para no mostrar el aviso de
+// largo cuando el problema es otro.
+function isMaxLengthError(detail: unknown): boolean {
+  const text = Array.isArray(detail)
+    ? detail
+        .map((d) => (d && typeof d === "object" && "msg" in d ? String((d as { msg: unknown }).msg) : ""))
+        .join(" ")
+    : typeof detail === "string"
+      ? detail
+      : ""
+  return /at most \d+ characters|must be at most \d+ characters/i.test(text)
+}
 const REPORTS_REFRESH_MS = 30_000
 
 // Below this width (phones) the three columns don't fit: the screen shows one
@@ -390,7 +415,7 @@ export default function ChatScreen() {
 
   // Edit-channel modal
   const [editChOpen, setEditChOpen] = useState(false)
-  const [editChTarget, setEditChTarget] = useState<{ id: string; name: string; topic?: string | null } | null>(null)
+  const [editChTarget, setEditChTarget] = useState<{ id: string; name: string; topic?: string | null; categoryId?: string | null } | null>(null)
   const [editChName, setEditChName] = useState("")
   const [editChTopic, setEditChTopic] = useState("")
   const [editChBusy, setEditChBusy] = useState(false)
@@ -400,8 +425,29 @@ export default function ChatScreen() {
   const [createChOpen, setCreateChOpen] = useState(false)
   const [createChName, setCreateChName] = useState("")
   const [createChType, setCreateChType] = useState<"text" | "voice">("text")
+  const [createChCategoryId, setCreateChCategoryId] = useState<string | null>(null)
   const [createChBusy, setCreateChBusy] = useState(false)
   const [createChError, setCreateChError] = useState("")
+
+  // Category management modals (HU-4)
+  const [catCreateOpen, setCatCreateOpen] = useState(false)
+  const [catCreateName, setCatCreateName] = useState("")
+  const [catCreateBusy, setCatCreateBusy] = useState(false)
+  const [catCreateError, setCatCreateError] = useState("")
+
+  const [catEditOpen, setCatEditOpen] = useState(false)
+  const [catEditTarget, setCatEditTarget] = useState<{ id: string; name: string } | null>(null)
+  const [catEditName, setCatEditName] = useState("")
+  const [catEditBusy, setCatEditBusy] = useState(false)
+  const [catEditError, setCatEditError] = useState("")
+
+  const [catDeleteOpen, setCatDeleteOpen] = useState(false)
+  const [catDeleteTarget, setCatDeleteTarget] = useState<{ id: string; name: string } | null>(null)
+  const [catDeleteBusy, setCatDeleteBusy] = useState(false)
+  const [catDeleteError, setCatDeleteError] = useState("")
+
+  // Edit-channel: selected category
+  const [editChCategoryId, setEditChCategoryId] = useState<string | null | "UNSET">("UNSET")
 
   // Leave-server confirmation (HU-5)
   const [leaveOpen, setLeaveOpen] = useState(false)
@@ -473,6 +519,13 @@ export default function ChatScreen() {
   // from the backend's own role permissions (HU-4/HU-5 gating). Empty when the
   // user isn't an admin or it couldn't be confirmed -> falls back to owner-only.
   const [memberPermissions, setMemberPermissions] = useState<string[]>([])
+  // CA3: ¿puede el usuario enviar en el canal abierto? null = desconocido
+  // (todavía no se consultó, o la consulta falló por algo transitorio). En ese
+  // caso NO se deshabilita el campo: el POST igual se valida en el backend.
+  const [canSend, setCanSend] = useState<boolean | null>(null)
+  // El canal cuya respuesta de permisos vale ahora: descarta respuestas que
+  // llegan tarde de un canal anterior y evita deshabilitar el campo equivocado.
+  const permsChannelRef = useRef("")
 
   // Ownership transfer (HU-7)
   // Owner-initiated transfer modal.
@@ -598,9 +651,22 @@ export default function ChatScreen() {
       setMessages([])
       return
     }
+    let active = true
     getMessages(activeChannel)
-      .then(setMessages)
-      .catch(() => setMessages([]))
+      .then((msgs) => {
+        // Descartar una respuesta que llega tarde de un canal anterior: no puede
+        // meter mensajes en el canal abierto ahora.
+        if (active) setMessages(msgs)
+      })
+      .catch((err) => {
+        if (!active) return
+        // Un 423 del GET del historial activa la UI de servidor suspendido.
+        if (err instanceof ApiError && err.status === 423) setServerSuspended(activeServer, true)
+        setMessages([])
+      })
+    return () => {
+      active = false
+    }
   }, [activeChannel])
 
   // --- Indicadores de no leído (CA1 canal, CA2 servidor, CA3 menciones) ---
@@ -620,6 +686,32 @@ export default function ChatScreen() {
   viewedRef.current = viewedChannel
   // Mensajes que envié y que una respuesta anterior del historial todavía puede no traer.
   const sentIds = useRef(new Set<string>())
+  // Realtime frames, fallback-poll pages, reconnect recovery and the 60 s
+  // reconcile all land here: union by id (the backend version wins, and an
+  // optimistic send not yet echoed is kept), sorted by created_at. Returns the
+  // same array when nothing changed, to avoid a needless re-render.
+  const messagesRef = useRef<Message[]>(messages)
+  messagesRef.current = messages
+  const mergeMessages = useCallback((incoming: Message[]) => {
+    if (incoming.length === 0) return
+    setMessages((prev) => {
+      const byId = new Map<string, Message>()
+      for (const m of prev) byId.set(m.id, m)
+      for (const m of incoming) {
+        byId.set(m.id, m)
+        sentIds.current.delete(m.id)
+      }
+      // Comparar por fecha real: POST, GET y messages.created podrían serializar
+      // created_at con formatos distintos, así que no se ordena como texto.
+      const merged = [...byId.values()].sort((a, b) => {
+        const ta = a.createdAt ? Date.parse(a.createdAt) : 0
+        const tb = b.createdAt ? Date.parse(b.createdAt) : 0
+        return ta - tb
+      })
+      const same = merged.length === prev.length && merged.every((m, i) => m.id === prev[i]?.id)
+      return same ? prev : merged
+    })
+  }, [])
 
   useEffect(() => {
     if (!realServerIds) {
@@ -650,31 +742,10 @@ export default function ChatScreen() {
     markChannelRead(viewedChannel).catch(() => undefined)
   }, [viewedChannel, messages.length])
 
-  // Mensajes nuevos de otros en el canal que se está mirando.
-  useEffect(() => {
-    if (!viewedChannel) return
-    let active = true
-    const timer = setInterval(() => {
-      getMessages(viewedChannel)
-        .then((list) => {
-          if (!active) return
-          const known = new Set(list.map((m) => m.id))
-          for (const id of known) sentIds.current.delete(id)
-          setMessages((prev) => {
-            const pending = prev.filter((m) => sentIds.current.has(m.id) && !known.has(m.id))
-            const next = [...list, ...pending]
-            const same =
-              next.length === prev.length && next.every((m, i) => m.id === prev[i]?.id)
-            return same ? prev : next
-          })
-        })
-        .catch(() => undefined)
-    }, MESSAGES_REFRESH_MS)
-    return () => {
-      active = false
-      clearInterval(timer)
-    }
-  }, [viewedChannel])
+  // Los mensajes nuevos del canal abierto llegan por el socket de tiempo real
+  // (useChannelMessages, más abajo): entrega en vivo, reconciliación cada 60 s y
+  // polling de respaldo solo mientras el socket NO está abierto. No se pollea
+  // acá para no duplicar.
 
   // Lo que se pinta para un canal o servidor: el resumen del backend, y para el servidor de
   // ejemplo los valores de demostración que ya traía.
@@ -743,6 +814,13 @@ export default function ChatScreen() {
   }, [activeServer])
 
   const channel = categories.flatMap((c) => c.channels).find((c) => c.id === activeChannel)
+  // CA3/CA4: estado del compositor del canal abierto. `sendDisabled` solo cuando
+  // sabemos que no puede (canSend === false); un permiso desconocido (null, p.ej.
+  // una consulta que falló transitoriamente) NO deshabilita. El largo se cuenta
+  // por code points sobre el texto trimeado, igual que el backend.
+  const sendDisabled = canSend === false
+  const messageLength = [...input.trim()].length
+  const messageTooLong = messageLength > MESSAGE_MAX
 
   // Owner of the active server (derived): only the owner may initiate a transfer.
   // Recomputes whenever `servers` refreshes, so after an accepted transfer the
@@ -776,6 +854,15 @@ export default function ChatScreen() {
     (isOwner ||
       memberPermissions.includes(ADMIN_PERMISSION) ||
       memberPermissions.includes(MANAGE_ROLES_PERMISSION))
+
+  // Can manage channels/categories: the backend lets anyone with MANAGE_CHANNELS
+  // (or ADMINISTRATOR, or the owner) create/edit/delete channels and categories.
+  const canManageChannels =
+    !!activeServer &&
+    isRealServerId(activeServer) &&
+    (isOwner ||
+      memberPermissions.includes(ADMIN_PERMISSION) ||
+      memberPermissions.includes(MANAGE_CHANNELS_PERMISSION))
 
   // Can create invitations: the backend enforces CREATE_INVITE on
   // POST /servers/{id}/invites (the owner and ADMINISTRATOR always qualify), so
@@ -1368,6 +1455,14 @@ export default function ChatScreen() {
   const handleSend = async () => {
     const text = input.trim()
     if (!text) return
+    // CA3: si ya sabemos que no puede enviar, no intentamos (el campo está
+    // deshabilitado igual). CA4: bloqueamos un texto que excede el máximo,
+    // contando por code points sobre el texto trimeado, igual que el backend.
+    if (canSend === false) return
+    if ([...text].length > MESSAGE_MAX) {
+      setBannerError(`Máximo ${MESSAGE_MAX} caracteres`)
+      return
+    }
     try {
       const msg = await sendMessage(activeChannel, text, user?.name, {
         serverId: activeServer,
@@ -1379,9 +1474,30 @@ export default function ChatScreen() {
         ),
       })
       sentIds.current.add(msg.id)
-      setMessages((prev) => [...prev, msg])
+      // Dedupe by id: the realtime messages.created echo for this same message can land
+      // (via mergeMessages) before this awaited POST resolves, so a raw append would show
+      // the sender's own message twice. Skip the append when the id is already present.
+      setMessages((prev) => (prev.some((m) => m.id === msg.id) ? prev : [...prev, msg]))
       setInput("")
     } catch (err) {
+      // CA4: solo el 422 por largo máximo muestra ese aviso; cualquier otro 422
+      // (p.ej. demasiadas menciones) va por el error general.
+      if (err instanceof ApiError && err.status === 422) {
+        if (isMaxLengthError(err.detail)) setBannerError(`Máximo ${MESSAGE_MAX} caracteres`)
+        else setBannerError(friendlyError(err))
+        return
+      }
+      // Suspensión: un 423 del POST activa la UI existente.
+      if (err instanceof ApiError && err.status === 423) {
+        setServerSuspended(activeServer, true)
+        return
+      }
+      // CA3: perdió el permiso con el canal abierto → deshabilitar sin recargar.
+      if (err instanceof ApiError && err.status === 403) {
+        setCanSend(false)
+        setBannerError("No tenés permiso para enviar mensajes en este canal.")
+        return
+      }
       setBannerError(friendlyError(err))
     }
   }
@@ -1673,6 +1789,65 @@ export default function ChatScreen() {
     },
   )
 
+  // CA1: mensajes del canal abierto en tiempo real. Solo un canal real (UUID) de
+  // un servidor real; los canales mock/ejemplo no abren socket ni consultan nada.
+  const realOpenChannel =
+    isRealServerId(activeServer) && UUID_RE.test(activeChannel)
+      ? { id: activeChannel, serverId: activeServer }
+      : null
+  const { status: messagesStatus } = useChannelMessages({
+    channel: realOpenChannel,
+    enabled: !!user && !!process.env.EXPO_PUBLIC_API_URL,
+    onMessages: mergeMessages,
+    onServerSuspended: (serverId) => setServerSuspended(serverId, true),
+    getKnownMessageIds: () => messagesRef.current.map((m) => m.id),
+  })
+
+  // CA3: ¿puede enviar en el canal abierto? Se consulta al abrir el canal; si
+  // falló por algo transitorio (no 403/423) se reintenta al reconectar el socket
+  // (messagesStatus). Al cambiar de canal se resetea y se descartan las
+  // respuestas que lleguen tarde de un canal anterior (permsChannelRef).
+  useEffect(() => {
+    const real = isRealServerId(activeServer) && UUID_RE.test(activeChannel)
+    if (!real) {
+      permsChannelRef.current = ""
+      setCanSend(null)
+      return
+    }
+    const channelId = activeChannel
+    // Reset solo cuando cambia el canal (no en un reintento), para no pisar un
+    // valor conocido ni meter una respuesta vieja en el canal nuevo.
+    if (permsChannelRef.current !== channelId) {
+      permsChannelRef.current = channelId
+      setCanSend(null)
+    }
+    let active = true
+    const fetchPerms = () => {
+      getMyChannelPermissions(activeServer, channelId)
+        .then((perms) => {
+          // Puede volver false->true: si recuperó el permiso, se habilita sin recargar.
+          if (active && permsChannelRef.current === channelId) setCanSend(perms.canSend)
+        })
+        .catch((err) => {
+          if (!active || permsChannelRef.current !== channelId) return
+          // 423: el servidor está suspendido → UI existente, NO "no tenés permiso".
+          if (err instanceof ApiError && err.status === 423) setServerSuspended(activeServer, true)
+          // 403: perdió el permiso → deshabilitar.
+          else if (err instanceof ApiError && err.status === 403) setCanSend(false)
+          // Transitorio (timeout/5xx/red): mantené el valor anterior, no lo pases a false.
+        })
+    }
+    // Al abrir el canal y, con el canal abierto, cada 60 s (junto a la
+    // reconciliación), por si recupera el permiso. Un reconnect (messagesStatus)
+    // también reintenta.
+    fetchPerms()
+    const timer = setInterval(fetchPerms, 60_000)
+    return () => {
+      active = false
+      clearInterval(timer)
+    }
+  }, [activeServer, activeChannel, messagesStatus])
+
   // The call we are in keeps using LiveKit's own events (instant mute changes,
   // "(vos)"); every other voice channel shows the presence from the service.
   const voiceRosterFor = (channelId: string): VoiceParticipant[] => {
@@ -1718,10 +1893,11 @@ export default function ChatScreen() {
 
   // ---- Channel edit ---------------------------------------------------------
 
-  const openEditChannel = (ch: { id: string; name: string; topic?: string | null }) => {
+  const openEditChannel = (ch: { id: string; name: string; topic?: string | null; categoryId?: string | null }) => {
     setEditChTarget(ch)
     setEditChName(ch.name)
     setEditChTopic(ch.topic ?? "")
+    setEditChCategoryId(ch.categoryId ?? null)
     setEditChError("")
     setEditChOpen(true)
   }
@@ -1736,11 +1912,18 @@ export default function ChatScreen() {
     setEditChBusy(true)
     setEditChError("")
     try {
-      const data: { name?: string; topic?: string | null } = {}
+      const data: { name?: string; topic?: string | null; category_id?: string | null } = {}
       if (trimmedName !== editChTarget.name) data.name = trimmedName
       const newTopic = editChTopic.trim() || null
       const oldTopic = editChTarget.topic ?? null
       if (newTopic !== oldTopic) data.topic = newTopic
+
+      // category_id: only send when the user actually changed it (editChCategoryId
+      // starts as "UNSET" when no change is intended — compare against the channel's
+      // current categoryId).
+      const oldCatId = editChTarget.categoryId ?? null
+      const newCatId = editChCategoryId === "UNSET" ? oldCatId : editChCategoryId
+      if (newCatId !== oldCatId) data.category_id = newCatId
 
       if (Object.keys(data).length === 0) {
         setEditChOpen(false)
@@ -1748,16 +1931,45 @@ export default function ChatScreen() {
       }
 
       const updated = await updateChannel(activeServer, editChTarget.id, data)
-      setCategories((prev) =>
-        prev.map((cat) => ({
-          ...cat,
-          channels: cat.channels.map((ch) =>
-            ch.id === editChTarget.id
-              ? { ...ch, name: updated.name, topic: updated.topic }
-              : ch,
-          ),
-        })),
-      )
+      const updatedCatId = updated.category_id ?? null
+
+      // If the category changed, move the channel between categories in local state
+      if (updatedCatId !== oldCatId) {
+        setCategories((prev) => {
+          // Find the full channel object from state before removing it
+          const existingCh = prev.flatMap((c) => c.channels).find((c) => c.id === editChTarget.id)
+          // Remove from old category
+          const without = prev.map((cat) => ({
+            ...cat,
+            channels: cat.channels.filter((ch) => ch.id !== editChTarget.id),
+          }))
+          // Build updated channel object
+          const updatedCh = {
+            ...(existingCh ?? { id: editChTarget.id, type: "text" as const }),
+            name: updated.name,
+            topic: updated.topic,
+            categoryId: updatedCatId,
+          }
+          // Add to new category
+          return without.map((cat) => {
+            const isTarget = updatedCatId
+              ? cat.id === updatedCatId
+              : cat.name === "General" || cat.position === -1
+            return isTarget ? { ...cat, channels: [...cat.channels, updatedCh] } : cat
+          })
+        })
+      } else {
+        setCategories((prev) =>
+          prev.map((cat) => ({
+            ...cat,
+            channels: cat.channels.map((ch) =>
+              ch.id === editChTarget.id
+                ? { ...ch, name: updated.name, topic: updated.topic }
+                : ch,
+            ),
+          })),
+        )
+      }
       setEditChOpen(false)
     } catch (err) {
       setEditChError(friendlyError(err))
@@ -1768,9 +1980,10 @@ export default function ChatScreen() {
 
   // ---- Channel create --------------------------------------------------------
 
-  const openCreateChannel = () => {
+  const openCreateChannel = (categoryId?: string | null) => {
     setCreateChName("")
     setCreateChType("text")
+    setCreateChCategoryId(categoryId ?? null)
     setCreateChError("")
     setCreateChOpen(true)
   }
@@ -1791,17 +2004,20 @@ export default function ChatScreen() {
     setCreateChBusy(true)
     setCreateChError("")
     try {
-      const created = await createChannel(activeServer, { name: trimmedName, type: createChType })
+      const created = await createChannel(activeServer, { name: trimmedName, type: createChType, category_id: createChCategoryId })
+      const newCh = { id: created.id, name: created.name, type: created.type, topic: created.topic, categoryId: created.category_id ?? null }
       setCategories((prev) => {
         if (prev.length === 0) {
-          return [{ id: `${activeServer}:channels`, name: "Canales", channels: [{ id: created.id, name: created.name, type: created.type, topic: created.topic }] }]
+          return [{ id: `${activeServer}:general`, name: "General", position: -1, channels: [newCh] }]
         }
-        // Append to the last category
-        return prev.map((cat, i) =>
-          i === prev.length - 1
-            ? { ...cat, channels: [...cat.channels, { id: created.id, name: created.name, type: created.type, topic: created.topic }] }
-            : cat,
-        )
+        // Place in the matching category, or "General" (first) if uncategorized
+        const targetCatId = createChCategoryId
+        return prev.map((cat) => {
+          const isTarget = targetCatId
+            ? cat.id === targetCatId
+            : cat.name === "General" || cat.position === -1
+          return isTarget ? { ...cat, channels: [...cat.channels, newCh] } : cat
+        })
       })
       setActiveChannel(created.id)
       setCreateChOpen(false)
@@ -1815,6 +2031,125 @@ export default function ChatScreen() {
       }
     } finally {
       setCreateChBusy(false)
+    }
+  }
+
+  // ---- Category CRUD --------------------------------------------------------
+
+  const openCreateCategory = () => {
+    setCatCreateName("")
+    setCatCreateError("")
+    setCatCreateOpen(true)
+  }
+
+  const handleCreateCategory = async () => {
+    if (!isRealServerId(activeServer)) return
+    const trimmedName = catCreateName.trim()
+    if (!trimmedName) {
+      setCatCreateError("Poné un nombre para la categoría.")
+      return
+    }
+    setCatCreateBusy(true)
+    setCatCreateError("")
+    try {
+      const created = await createCategory(activeServer, trimmedName)
+      setCategories((prev) => [
+        ...prev,
+        { id: created.id, name: created.name, position: created.position, channels: [] },
+      ])
+      setCatCreateOpen(false)
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 409) {
+        setCatCreateError("Ya existe una categoría con ese nombre.")
+      } else if (err instanceof ApiError && err.status === 403) {
+        setCatCreateError("No tenés permisos para crear categorías.")
+      } else {
+        setCatCreateError(friendlyError(err))
+      }
+    } finally {
+      setCatCreateBusy(false)
+    }
+  }
+
+  const openEditCategory = (cat: { id: string; name: string }) => {
+    setCatEditTarget(cat)
+    setCatEditName(cat.name)
+    setCatEditError("")
+    setCatEditOpen(true)
+  }
+
+  const handleEditCategory = async () => {
+    if (!catEditTarget || !isRealServerId(activeServer)) return
+    const trimmedName = catEditName.trim()
+    if (!trimmedName) {
+      setCatEditError("El nombre no puede estar vacío.")
+      return
+    }
+    if (trimmedName === catEditTarget.name) {
+      setCatEditOpen(false)
+      return
+    }
+    setCatEditBusy(true)
+    setCatEditError("")
+    try {
+      const updated = await updateCategory(activeServer, catEditTarget.id, trimmedName)
+      setCategories((prev) =>
+        prev.map((cat) => (cat.id === catEditTarget.id ? { ...cat, name: updated.name } : cat)),
+      )
+      setCatEditOpen(false)
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 409) {
+        setCatEditError("Ya existe una categoría con ese nombre.")
+      } else {
+        setCatEditError(friendlyError(err))
+      }
+    } finally {
+      setCatEditBusy(false)
+    }
+  }
+
+  const openDeleteCategory = (cat: { id: string; name: string }) => {
+    setCatDeleteTarget(cat)
+    setCatDeleteError("")
+    setCatDeleteOpen(true)
+  }
+
+  const handleDeleteCategory = async () => {
+    if (!catDeleteTarget || !isRealServerId(activeServer)) return
+    setCatDeleteBusy(true)
+    setCatDeleteError("")
+    try {
+      await deleteCategory(activeServer, catDeleteTarget.id)
+      // Move the category's channels to the "General" section
+      setCategories((prev) => {
+        const deleted = prev.find((c) => c.id === catDeleteTarget.id)
+        const orphanChannels = (deleted?.channels ?? []).map((ch) => ({ ...ch, categoryId: null }))
+        const without = prev.filter((c) => c.id !== catDeleteTarget.id)
+        if (orphanChannels.length === 0) return without
+        // Place orphans in the General section (position === -1 or name === "General")
+        const hasGeneral = without.some((c) => c.name === "General" || c.position === -1)
+        if (hasGeneral) {
+          return without.map((c) =>
+            c.name === "General" || c.position === -1
+              ? { ...c, channels: [...c.channels, ...orphanChannels] }
+              : c,
+          )
+        }
+        // No General section yet — create one
+        return [
+          { id: `${activeServer}:general`, name: "General", position: -1, channels: orphanChannels },
+          ...without,
+        ]
+      })
+      setCatDeleteOpen(false)
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 403) {
+        setCatDeleteError("No tenés permisos para eliminar categorías.")
+      } else {
+        setCatDeleteError(friendlyError(err))
+      }
+    } finally {
+      setCatDeleteBusy(false)
     }
   }
 
@@ -2400,21 +2735,59 @@ export default function ChatScreen() {
               </Text>
             </View>
           ) : null}
-          {categories.map((cat) => (
+          {/* HU-4: "Crear categoría" button for admins, above the category list */}
+          {canManageChannels ? (
+            <PressableScale
+              onPress={openCreateCategory}
+              accessibilityLabel="Crear categoría"
+              hoverStyle={{ backgroundColor: "rgba(255,255,255,0.08)" }}
+              style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 12, paddingVertical: 8 }}
+            >
+              <Ionicons name="folder-open-outline" size={13} color="#8DA8AC" />
+              <Text style={{ color: "#8DA8AC", fontSize: 11, fontWeight: "600" }}>Crear categoría</Text>
+            </PressableScale>
+          ) : null}
+          {categories.map((cat) => {
+            // A "real" category has a backend UUID id; the synthetic "General"
+            // section (uncategorized channels) uses a composite id like "uuid:general".
+            const isRealCategory = UUID_RE.test(cat.id)
+            return (
             <View key={cat.id}>
               <View style={{ paddingHorizontal: 12, paddingTop: 12, paddingBottom: 4, flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
                 <Text style={{ color: "#8DA8AC", fontWeight: "700", textTransform: "uppercase", fontSize: 9.5, letterSpacing: 1.3 }}>
                   {cat.name}
                 </Text>
-                {isOwner && isRealServerId(activeServer) ? (
-                  <PressableScale
-                    onPress={openCreateChannel}
-                    accessibilityLabel="Crear canal"
-                    hoverStyle={{ backgroundColor: "rgba(255,255,255,0.12)" }}
-                    style={{ padding: iconBtnPad, borderRadius: 6 }}
-                  >
-                    <Ionicons name="add" size={14} color="#8DA8AC" />
-                  </PressableScale>
+                {canManageChannels ? (
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 2 }}>
+                    {isRealCategory ? (
+                      <>
+                        <PressableScale
+                          onPress={() => openEditCategory(cat)}
+                          accessibilityLabel={`Editar categoría ${cat.name}`}
+                          hoverStyle={{ backgroundColor: "rgba(255,255,255,0.12)" }}
+                          style={{ padding: iconBtnPad, borderRadius: 6 }}
+                        >
+                          <Ionicons name="pencil-outline" size={11} color="#8DA8AC" />
+                        </PressableScale>
+                        <PressableScale
+                          onPress={() => openDeleteCategory(cat)}
+                          accessibilityLabel={`Eliminar categoría ${cat.name}`}
+                          hoverStyle={{ backgroundColor: "rgba(255,127,114,0.14)" }}
+                          style={{ padding: iconBtnPad, borderRadius: 6 }}
+                        >
+                          <Ionicons name="trash-outline" size={11} color="#FF9E94" />
+                        </PressableScale>
+                      </>
+                    ) : null}
+                    <PressableScale
+                      onPress={() => openCreateChannel(isRealCategory ? cat.id : null)}
+                      accessibilityLabel="Crear canal"
+                      hoverStyle={{ backgroundColor: "rgba(255,255,255,0.12)" }}
+                      style={{ padding: iconBtnPad, borderRadius: 6 }}
+                    >
+                      <Ionicons name="add" size={14} color="#8DA8AC" />
+                    </PressableScale>
+                  </View>
                 ) : null}
               </View>
               {cat.channels.map((ch) => {
@@ -2471,7 +2844,7 @@ export default function ChatScreen() {
                     >
                       {ch.name}
                     </Text>
-                    {isOwner && isRealServerId(activeServer) && active ? (
+                    {canManageChannels && active ? (
                       <View style={{ flexDirection: "row", gap: 2 }}>
                         <PressableScale
                           onPress={() => handleMoveChannel(ch.id, "up")}
@@ -2558,7 +2931,7 @@ export default function ChatScreen() {
                 )
               })}
             </View>
-          ))}
+          )})}
         </ScrollView>
 
         {voice.dropNotice ? (
@@ -2922,21 +3295,57 @@ export default function ChatScreen() {
             <TextInput
               value={input}
               onChangeText={setInput}
-              placeholder={`Escribí en #${channel?.name ?? ""}`}
+              editable={!sendDisabled}
+              placeholder={
+                sendDisabled
+                  ? "No tenés permiso para enviar mensajes en este canal."
+                  : `Escribí en #${channel?.name ?? ""}`
+              }
               placeholderTextColor="#5E7E82"
-              style={{ flex: 1, color: "#E6F3F3", fontSize: 12 }}
+              style={{ flex: 1, color: "#E6F3F3", fontSize: 12, opacity: sendDisabled ? 0.5 : 1 }}
               onSubmitEditing={handleSend}
               returnKeyType="send"
             />
             <PressableScale
               onPress={handleSend}
-              pressedScale={0.92}
-              style={{ paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 }}
+              pressedScale={sendDisabled || messageTooLong ? 1 : 0.92}
+              style={{
+                paddingHorizontal: 6,
+                paddingVertical: 2,
+                borderRadius: 6,
+                opacity: sendDisabled || messageTooLong ? 0.4 : 1,
+              }}
               hoverStyle={{ backgroundColor: "rgba(55,214,192,0.12)" }}
             >
               <Text style={{ color: "#37D6C0", fontWeight: "600", fontSize: 11 }}>Enviar</Text>
             </PressableScale>
           </View>
+          {/* CA3: explicación cuando no puede enviar. CA4: contador y aviso de largo. */}
+          {sendDisabled || messageLength >= MESSAGE_COUNTER_FROM ? (
+            <View
+              style={{
+                flexDirection: "row",
+                justifyContent: "space-between",
+                alignItems: "center",
+                marginTop: 4,
+                paddingHorizontal: 4,
+                gap: 8,
+              }}
+            >
+              <Text style={{ color: sendDisabled || messageTooLong ? "#FF9B8A" : "#8DA8AC", fontSize: 10.5, flexShrink: 1 }}>
+                {sendDisabled
+                  ? "No tenés permiso para enviar mensajes en este canal."
+                  : messageTooLong
+                    ? `Máximo ${MESSAGE_MAX} caracteres`
+                    : ""}
+              </Text>
+              {!sendDisabled && messageLength >= MESSAGE_COUNTER_FROM ? (
+                <Text style={{ color: messageTooLong ? "#FF6B6B" : "#8DA8AC", fontSize: 10.5 }}>
+                  {messageLength}/{MESSAGE_MAX}
+                </Text>
+              ) : null}
+            </View>
+          ) : null}
         </View>
       </View>
 
@@ -3558,8 +3967,48 @@ export default function ChatScreen() {
           placeholderTextColor="#5E7E82"
           maxLength={256}
           autoCapitalize="none"
-          style={[FIELD, { marginBottom: 18 }]}
+          style={[FIELD, { marginBottom: 14 }]}
         />
+
+        {/* HU-4: category selector — move channel between categories */}
+        <Text style={LABEL}>Categoría</Text>
+        {(() => {
+          const effectiveCatId = editChCategoryId === "UNSET" ? (editChTarget?.categoryId ?? null) : editChCategoryId
+          const noneSelected = effectiveCatId === null
+          const realCats = categories.filter((c) => UUID_RE.test(c.id))
+          return (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 18 }}>
+              <View style={{ flexDirection: "row", gap: 6 }}>
+                <PressableScale
+                  onPress={() => setEditChCategoryId(null)}
+                  style={{
+                    paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, borderWidth: 1.5,
+                    borderColor: noneSelected ? "#37D6C0" : "#1A3A3A",
+                    backgroundColor: noneSelected ? "rgba(55,214,192,0.12)" : "transparent",
+                  }}
+                >
+                  <Text style={{ color: noneSelected ? "#E6F3F3" : "#8DA8AC", fontSize: 12, fontWeight: "600" }}>Sin categoría</Text>
+                </PressableScale>
+                {realCats.map((c) => {
+                  const sel = effectiveCatId === c.id
+                  return (
+                    <PressableScale
+                      key={c.id}
+                      onPress={() => setEditChCategoryId(c.id)}
+                      style={{
+                        paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, borderWidth: 1.5,
+                        borderColor: sel ? "#37D6C0" : "#1A3A3A",
+                        backgroundColor: sel ? "rgba(55,214,192,0.12)" : "transparent",
+                      }}
+                    >
+                      <Text style={{ color: sel ? "#E6F3F3" : "#8DA8AC", fontSize: 12, fontWeight: "600" }}>{c.name}</Text>
+                    </PressableScale>
+                  )
+                })}
+              </View>
+            </ScrollView>
+          )
+        })()}
 
         <PressableScale
           onPress={handleEditChannel}
@@ -3654,6 +4103,39 @@ export default function ChatScreen() {
             <Text style={{ color: createChType === "voice" ? "#E6F3F3" : "#8DA8AC", fontSize: 11, marginTop: 2 }}>Voz</Text>
           </PressableScale>
         </View>
+
+        {/* HU-4: category selector for new channel */}
+        <Text style={LABEL}>Categoría</Text>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 18 }}>
+          <View style={{ flexDirection: "row", gap: 6 }}>
+            <PressableScale
+              onPress={() => setCreateChCategoryId(null)}
+              style={{
+                paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, borderWidth: 1.5,
+                borderColor: createChCategoryId === null ? "#37D6C0" : "#1A3A3A",
+                backgroundColor: createChCategoryId === null ? "rgba(55,214,192,0.12)" : "transparent",
+              }}
+            >
+              <Text style={{ color: createChCategoryId === null ? "#E6F3F3" : "#8DA8AC", fontSize: 12, fontWeight: "600" }}>Sin categoría</Text>
+            </PressableScale>
+            {categories.filter((c) => UUID_RE.test(c.id)).map((c) => {
+              const sel = createChCategoryId === c.id
+              return (
+                <PressableScale
+                  key={c.id}
+                  onPress={() => setCreateChCategoryId(c.id)}
+                  style={{
+                    paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, borderWidth: 1.5,
+                    borderColor: sel ? "#37D6C0" : "#1A3A3A",
+                    backgroundColor: sel ? "rgba(55,214,192,0.12)" : "transparent",
+                  }}
+                >
+                  <Text style={{ color: sel ? "#E6F3F3" : "#8DA8AC", fontSize: 12, fontWeight: "600" }}>{c.name}</Text>
+                </PressableScale>
+              )
+            })}
+          </View>
+        </ScrollView>
 
         <View style={{ flexDirection: "row", gap: 8 }}>
           <PressableScale
@@ -4064,6 +4546,136 @@ export default function ChatScreen() {
             ))}
           </ScrollView>
         )}
+      </ModalShell>
+
+      {/* HU-4: Create-category modal */}
+      <ModalShell
+        visible={catCreateOpen}
+        onClose={() => setCatCreateOpen(false)}
+        title="Crear categoría"
+      >
+        {catCreateError ? (
+          <View style={NOTICE_ERROR}>
+            <Text style={{ color: "#FF9E94", fontSize: 12.5 }}>{catCreateError}</Text>
+          </View>
+        ) : null}
+
+        <Text style={LABEL}>Nombre</Text>
+        <TextInput
+          value={catCreateName}
+          onChangeText={setCatCreateName}
+          placeholder="nombre-de-categoría"
+          placeholderTextColor="#5E7E82"
+          maxLength={100}
+          autoCapitalize="none"
+          style={[FIELD, { marginBottom: 18 }]}
+        />
+
+        <View style={{ flexDirection: "row", gap: 8 }}>
+          <PressableScale
+            onPress={() => setCatCreateOpen(false)}
+            style={{
+              flex: 1, alignItems: "center", paddingVertical: 12, borderRadius: 10,
+              borderWidth: 1, borderColor: "rgba(255,255,255,0.10)", backgroundColor: "rgba(255,255,255,0.06)",
+            }}
+          >
+            <Text style={{ color: "#E6F3F3", fontWeight: "700", fontSize: 14 }}>Cancelar</Text>
+          </PressableScale>
+          <PressableScale
+            onPress={handleCreateCategory}
+            disabled={catCreateBusy || !catCreateName.trim()}
+            style={[PRIMARY_BTN, { flex: 1, opacity: catCreateBusy || !catCreateName.trim() ? 0.5 : 1 }]}
+          >
+            {catCreateBusy ? (
+              <ActivityIndicator color="#04211D" />
+            ) : (
+              <Text style={PRIMARY_TXT}>Crear</Text>
+            )}
+          </PressableScale>
+        </View>
+      </ModalShell>
+
+      {/* HU-4: Edit-category modal */}
+      <ModalShell
+        visible={catEditOpen}
+        onClose={() => setCatEditOpen(false)}
+        title="Editar categoría"
+      >
+        {catEditError ? (
+          <View style={NOTICE_ERROR}>
+            <Text style={{ color: "#FF9E94", fontSize: 12.5 }}>{catEditError}</Text>
+          </View>
+        ) : null}
+
+        <Text style={LABEL}>Nombre</Text>
+        <TextInput
+          value={catEditName}
+          onChangeText={setCatEditName}
+          placeholder="nombre-de-categoría"
+          placeholderTextColor="#5E7E82"
+          maxLength={100}
+          autoCapitalize="none"
+          style={[FIELD, { marginBottom: 18 }]}
+        />
+
+        <PressableScale
+          onPress={handleEditCategory}
+          disabled={catEditBusy || !catEditName.trim()}
+          style={[PRIMARY_BTN, { opacity: catEditBusy || !catEditName.trim() ? 0.5 : 1 }]}
+        >
+          {catEditBusy ? (
+            <ActivityIndicator color="#04211D" />
+          ) : (
+            <Text style={PRIMARY_TXT}>Guardar</Text>
+          )}
+        </PressableScale>
+      </ModalShell>
+
+      {/* HU-4: Delete-category confirmation modal */}
+      <ModalShell
+        visible={catDeleteOpen}
+        onClose={() => setCatDeleteOpen(false)}
+        title="Eliminar categoría"
+      >
+        <Text style={{ color: "#8DA8AC", fontSize: 13, lineHeight: 19, marginBottom: 18 }}>
+          ¿Seguro que querés eliminar la categoría{" "}
+          <Text style={{ color: "#E6F3F3", fontWeight: "700" }}>
+            {catDeleteTarget?.name ?? ""}
+          </Text>
+          ? Los canales dentro de esta categoría pasarán a la sección general.
+        </Text>
+
+        {catDeleteError ? (
+          <View style={NOTICE_ERROR}>
+            <Text style={{ color: "#FF9E94", fontSize: 12.5 }}>{catDeleteError}</Text>
+          </View>
+        ) : null}
+
+        <View style={{ flexDirection: "row", gap: 8 }}>
+          <PressableScale
+            onPress={() => setCatDeleteOpen(false)}
+            style={{
+              flex: 1, alignItems: "center", paddingVertical: 12, borderRadius: 10,
+              borderWidth: 1, borderColor: "rgba(255,255,255,0.10)", backgroundColor: "rgba(255,255,255,0.06)",
+            }}
+          >
+            <Text style={{ color: "#E6F3F3", fontWeight: "700", fontSize: 14 }}>Cancelar</Text>
+          </PressableScale>
+          <PressableScale
+            onPress={handleDeleteCategory}
+            disabled={catDeleteBusy}
+            style={{
+              flex: 1, alignItems: "center", paddingVertical: 12, borderRadius: 10,
+              backgroundColor: "rgba(255,127,114,0.18)", opacity: catDeleteBusy ? 0.5 : 1,
+            }}
+          >
+            {catDeleteBusy ? (
+              <ActivityIndicator color="#FF7F72" />
+            ) : (
+              <Text style={{ color: "#FF7F72", fontWeight: "700", fontSize: 14 }}>Eliminar</Text>
+            )}
+          </PressableScale>
+        </View>
       </ModalShell>
 
       {/* Lost access to a server (HU-25: banned) */}

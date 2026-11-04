@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react"
 import { View, Text, TouchableOpacity, ScrollView, ActivityIndicator } from "react-native"
 import { useRouter, useLocalSearchParams } from "expo-router"
-import { confirmEmailChange } from "@/api/auth"
-import { friendlyError } from "@/api/client"
+import { confirmEmailChange } from "@/lib/api/auth"
+import { friendlyError } from "@/lib/api/client"
 import AuthBrand from "@/components/AuthBrand"
 
 type State = "loading" | "done" | "error"

@@ -24,6 +24,7 @@ interface BackendUser {
   status?: UserStatus
   created_at?: string
   has_password?: boolean
+  email_verified?: boolean
   password_changed_at?: string | null
   two_factor_enabled?: boolean
 }
@@ -49,6 +50,7 @@ function toUser(backendUser: BackendUser): User {
     status: backendUser.status ?? "online",
     createdAt: backendUser.created_at,
     hasPassword: backendUser.has_password,
+    emailVerified: backendUser.email_verified,
     passwordChangedAt: backendUser.password_changed_at ?? null,
     twoFactorEnabled: backendUser.two_factor_enabled ?? false,
   }
@@ -444,6 +446,18 @@ export async function updateAvatar(
     fd.append("file", new NativeFile(file.uri) as any)
   }
   const res = await apiUpload<BackendUser>("/auth/users/me/avatar", fd)
+  return toUser(res)
+}
+
+export async function requestEmailVerification(): Promise<void> {
+  await api("/auth/users/me/email/verification", { method: "POST" })
+}
+
+export async function confirmEmailVerification(code: string): Promise<User> {
+  const res = await api<BackendUser>("/auth/users/me/email/verification/confirm", {
+    method: "POST",
+    body: JSON.stringify({ code }),
+  })
   return toUser(res)
 }
 
