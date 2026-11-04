@@ -1,6 +1,6 @@
 import { View, Text, ScrollView, ActivityIndicator } from "react-native"
 import type { ViewStyle } from "react-native"
-import type { ServerMember } from "@/api/types"
+import type { ServerMember } from "@/lib/api/types"
 import ModalShell from "./ModalShell"
 import Avatar from "./Avatar"
 

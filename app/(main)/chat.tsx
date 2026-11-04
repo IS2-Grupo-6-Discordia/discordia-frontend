@@ -66,7 +66,7 @@ import {
   withoutChannel,
   extractMentionIds,
   EMPTY_UNREAD,
-} from "@/api"
+} from "@/lib/api"
 import type {
   Server,
   Category,
@@ -81,9 +81,9 @@ import type {
   ServerBan,
   MyServerPermissions,
   UnreadSummary,
-} from "@/api/types"
-import { hasServerPermission } from "@/api/types"
-import { ApiError, friendlyError } from "@/api/client"
+} from "@/lib/api/types"
+import { hasServerPermission } from "@/lib/api/types"
+import { ApiError, friendlyError } from "@/lib/api/client"
 import { useAuth } from "@/context/AuthContext"
 import { useVoice } from "@/context/VoiceContext"
 import type { VoiceParticipant } from "@/context/VoiceContext"
@@ -95,7 +95,7 @@ import ModalShell from "@/components/ModalShell"
 import PressableScale from "@/components/PressableScale"
 import DeleteServerModal from "@/components/DeleteServerModal"
 import ReportModal from "@/components/ReportModal"
-import { getPendingReportCount, type ReportTarget } from "@/api/reports"
+import { getPendingReportCount, type ReportTarget } from "@/lib/api/reports"
 import ServerReportsModal from "@/components/ServerReportsModal"
 import ServerSettingsModal from "@/components/ServerSettingsModal"
 import RolesModal from "@/components/RolesModal"

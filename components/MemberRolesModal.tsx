@@ -2,7 +2,7 @@ import { useEffect, useState } from "react"
 import { View, Text, ScrollView, ActivityIndicator } from "react-native"
 import type { ViewStyle } from "react-native"
 import { Ionicons } from "@expo/vector-icons"
-import type { ServerRole } from "@/api/types"
+import type { ServerRole } from "@/lib/api/types"
 import ModalShell from "./ModalShell"
 import PressableScale from "./PressableScale"
 

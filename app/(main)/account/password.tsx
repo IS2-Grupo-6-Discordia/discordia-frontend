@@ -1,8 +1,8 @@
 import { useState } from "react"
 import { Text } from "react-native"
 import { useRouter } from "expo-router"
-import { changePassword, checkCurrentPassword } from "@/api/auth"
-import { ApiError, friendlyError } from "@/api/client"
+import { changePassword, checkCurrentPassword } from "@/lib/api/auth"
+import { ApiError, friendlyError } from "@/lib/api/client"
 import AuthField from "@/components/AuthField"
 import {
   AccountScreen,
