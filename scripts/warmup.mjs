@@ -115,8 +115,8 @@ async function main() {
       : "https://microservicio-canales-de-voz.onrender.com/readyz")
   if (vozReadyz) targets.push({ label: "voz", url: vozReadyz })
 
-  // Extra targets (e.g. the servidores microservice /health direct URL) can be added without
-  // touching this file: WARMUP_EXTRA_URLS="https://host-a/health,https://host-b/health".
+  // Extra targets (e.g. a microservice /livez direct URL) can be added without
+  // touching this file: WARMUP_EXTRA_URLS="https://host-a/livez,https://host-b/livez".
   const extra = (process.env.WARMUP_EXTRA_URLS ?? "")
     .split(",")
     .map((u) => u.trim())
