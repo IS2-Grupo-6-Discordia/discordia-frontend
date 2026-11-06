@@ -220,3 +220,40 @@ export interface UnreadSummary {
   channels: Record<string, UnreadCounts>
   servers: Record<string, UnreadCounts>
 }
+
+// HU-50: private 1-on-1 call signaling messages from the voice realtime WebSocket.
+export interface CallIncoming {
+  type: "call.incoming"
+  call_id: string
+  caller_id: string
+  peer_name?: string
+}
+
+export interface CallAccepted {
+  type: "call.accepted"
+  call_id: string
+  url: string
+  token: string
+}
+
+export interface CallRejected {
+  type: "call.rejected"
+  call_id: string
+}
+
+export interface CallEnded {
+  type: "call.ended"
+  call_id: string
+}
+
+export interface CallMissed {
+  type: "call.missed"
+  call_id: string
+}
+
+export type CallSignalingMessage =
+  | CallIncoming
+  | CallAccepted
+  | CallRejected
+  | CallEnded
+  | CallMissed
