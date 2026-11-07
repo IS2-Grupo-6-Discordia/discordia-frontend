@@ -746,13 +746,16 @@ export default function ChatScreen() {
     const ch = activeChannelRef.current
     if (!ch || !UUID_RE.test(ch)) return // mock/example channels: no pagination
     if (loadingOlderRef.current || !hasMoreHistoryRef.current) return
-    // Messages are sorted oldest-first, so [0] is the oldest one loaded.
-    const before = messagesRef.current[0]?.createdAt
+    // Messages are sorted oldest-first, so [0] is the oldest one loaded. Its id is
+    // the composite-cursor tiebreak (HU-6 CA1): created_at comes from a GET page
+    // (millisecond precision), so it matches the stored value the backend compares.
+    const oldest = messagesRef.current[0]
+    const before = oldest?.createdAt
     if (!before) return
     loadingOlderRef.current = true
     setLoadingOlder(true)
     setHistoryError(false)
-    getMessages(ch, { limit: HISTORY_PAGE, before })
+    getMessages(ch, { limit: HISTORY_PAGE, before, beforeId: oldest.id })
       .then((batch) => {
         if (activeChannelRef.current !== ch) return // channel changed: discard
         // A short page means we reached the start: hide the control for good.

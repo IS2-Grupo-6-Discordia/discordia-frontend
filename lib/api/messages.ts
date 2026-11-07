@@ -171,6 +171,11 @@ export interface GetMessagesOptions {
   // ISO `created_at`: returns messages strictly older than this, to page back
   // through history (historia 16 / ADR 0009 reconnect gap recovery).
   before?: string
+  // Id of the oldest message already loaded. Sent together with `before` as a
+  // composite cursor (created_at, id) so a message that shares `before`'s
+  // millisecond is not skipped at a page boundary (HU-6 CA1). Ignored without
+  // `before`.
+  beforeId?: string
 }
 
 export async function getMessages(
@@ -180,6 +185,7 @@ export async function getMessages(
   if (!isRealChannel(channelId)) return MOCK_MESSAGES[channelId] ?? []
   const params = new URLSearchParams({ limit: String(options.limit ?? 50) })
   if (options.before) params.set("before", options.before)
+  if (options.before && options.beforeId) params.set("before_id", options.beforeId)
   const list = await api<BackendMessage[]>(`/channels/${channelId}/messages?${params.toString()}`)
   return hydrateAuthors(list)
 }
