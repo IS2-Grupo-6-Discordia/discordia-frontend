@@ -1,14 +1,15 @@
 import { getUsersBatch } from "./auth"
 import { api } from "./client"
 import type { Message } from "./types"
+import type { RealtimeTicket } from "@/lib/realtime"
 
 const REAL_CHANNEL_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
-function isRealChannel(channelId: string): boolean {
+export function isRealChannel(channelId: string): boolean {
   return REAL_CHANNEL_RE.test(channelId)
 }
 
-interface BackendMessage {
+export interface BackendMessage {
   id: string
   channel_id: string
   server_id: string
@@ -26,7 +27,7 @@ function colorForAuthor(id: string): string {
   return AUTHOR_COLORS[hash % AUTHOR_COLORS.length]
 }
 
-function toMessage(msg: BackendMessage, authorName: string): Message {
+export function toMessage(msg: BackendMessage, authorName: string): Message {
   return {
     id: msg.id,
     author: authorName,
@@ -36,6 +37,7 @@ function toMessage(msg: BackendMessage, authorName: string): Message {
       hour: "2-digit",
       minute: "2-digit",
     }),
+    createdAt: msg.created_at,
     text: msg.content,
   }
 }
@@ -44,7 +46,7 @@ function toMessage(msg: BackendMessage, authorName: string): Message {
 // se recuerdan, porque el historial del canal abierto se vuelve a consultar cada pocos segundos.
 const authorNames = new Map<string, string>()
 
-async function hydrateAuthors(list: BackendMessage[]): Promise<Message[]> {
+export async function hydrateAuthors(list: BackendMessage[]): Promise<Message[]> {
   const missing = [...new Set(list.map((m) => m.author_id))].filter((id) => !authorNames.has(id))
   if (missing.length > 0) {
     try {
@@ -164,10 +166,34 @@ const MOCK_MESSAGES: Record<string, Message[]> = {
   ],
 }
 
-export async function getMessages(channelId: string): Promise<Message[]> {
+export interface GetMessagesOptions {
+  limit?: number
+  // ISO `created_at`: returns messages strictly older than this, to page back
+  // through history (historia 16 / ADR 0009 reconnect gap recovery).
+  before?: string
+  // Id of the oldest message already loaded. Sent together with `before` as a
+  // composite cursor (created_at, id) so a message that shares `before`'s
+  // millisecond is not skipped at a page boundary (HU-6 CA1). Ignored without
+  // `before`.
+  beforeId?: string
+}
+
+export async function getMessages(
+  channelId: string,
+  options: GetMessagesOptions = {},
+): Promise<Message[]> {
   if (!isRealChannel(channelId)) return MOCK_MESSAGES[channelId] ?? []
-  const list = await api<BackendMessage[]>(`/channels/${channelId}/messages?limit=50`)
+  const params = new URLSearchParams({ limit: String(options.limit ?? 50) })
+  if (options.before) params.set("before", options.before)
+  if (options.before && options.beforeId) params.set("before_id", options.beforeId)
+  const list = await api<BackendMessage[]>(`/channels/${channelId}/messages?${params.toString()}`)
   return hydrateAuthors(list)
+}
+
+// Single-use ticket to open the messages realtime WebSocket, which does not go
+// through the gateway (lib/realtime.ts). Mirrors getVoiceRealtimeTicket.
+export async function getMessagesRealtimeTicket(): Promise<RealtimeTicket> {
+  return api<RealtimeTicket>("/messages/realtime/ticket", { method: "POST" })
 }
 
 export interface SendMessageOptions {

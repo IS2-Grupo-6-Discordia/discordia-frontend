@@ -80,6 +80,8 @@ async function main() {
 
   console.log(`[warmup] Precalentando el backend en ${base} ...`)
 
+  const isLocalBackend = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/.test(base)
+
   // Warms gateway + auth service (no DB) and gateway + auth + DB (login touches the database;
   // a wrong-password login returns 401, which is exactly the DB path we want warm).
   const targets = [
@@ -96,7 +98,10 @@ async function main() {
   // the gateway without a token. We hit its Render URL directly instead: /readyz runs a
   // `SELECT 1`, so it wakes both the process and the DB connection. Override with SERVERS_READYZ_URL.
   const serversReadyz =
-    process.env.SERVERS_READYZ_URL ?? "https://microservicio-servidores.onrender.com/readyz"
+    process.env.SERVERS_READYZ_URL ??
+    (isLocalBackend
+      ? "http://localhost:8081/readyz"
+      : "https://microservicio-servidores.onrender.com/readyz")
   if (serversReadyz) targets.push({ label: "servidores + db", url: serversReadyz })
 
   // The voice microservice is also a separate Render free-tier service that hibernates, and its
@@ -104,11 +109,14 @@ async function main() {
   // Render URL directly: /readyz responds 200 unauthenticated and wakes the process.
   // Override with VOZ_READYZ_URL.
   const vozReadyz =
-    process.env.VOZ_READYZ_URL ?? "https://microservicio-canales-de-voz.onrender.com/readyz"
+    process.env.VOZ_READYZ_URL ??
+    (isLocalBackend
+      ? "http://localhost:8084/readyz"
+      : "https://microservicio-canales-de-voz.onrender.com/readyz")
   if (vozReadyz) targets.push({ label: "voz", url: vozReadyz })
 
-  // Extra targets (e.g. the servidores microservice /health direct URL) can be added without
-  // touching this file: WARMUP_EXTRA_URLS="https://host-a/health,https://host-b/health".
+  // Extra targets (e.g. a microservice /livez direct URL) can be added without
+  // touching this file: WARMUP_EXTRA_URLS="https://host-a/livez,https://host-b/livez".
   const extra = (process.env.WARMUP_EXTRA_URLS ?? "")
     .split(",")
     .map((u) => u.trim())

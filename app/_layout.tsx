@@ -2,7 +2,7 @@ import { Slot } from "expo-router"
 import { StatusBar } from "expo-status-bar"
 import { useEffect } from "react"
 import { Platform } from "react-native"
-import { wakeBackends } from "@/api/wake"
+import { wakeBackends } from "@/lib/api/wake"
 import { AuthProvider } from "@/context/AuthContext"
 
 // Web-only: browser autofill repaints inputs with a light background and dark

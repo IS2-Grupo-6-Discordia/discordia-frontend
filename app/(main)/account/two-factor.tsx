@@ -10,8 +10,8 @@ import {
   regenerateRecoveryCodes,
   startTwoFactorSetup,
   type TwoFactorStatus,
-} from "@/api/auth"
-import { ApiError, friendlyError } from "@/api/client"
+} from "@/lib/api/auth"
+import { ApiError, friendlyError } from "@/lib/api/client"
 import AuthField from "@/components/AuthField"
 import QrCode from "@/components/QrCode"
 import { AccountScreen, Card, DoneState, NoticeBox, PrimaryButton } from "@/components/account/AccountUi"

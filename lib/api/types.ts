@@ -12,6 +12,7 @@ export interface User {
   status?: UserStatus
   createdAt?: string
   hasPassword?: boolean
+  emailVerified?: boolean
   passwordChangedAt?: string | null
   twoFactorEnabled?: boolean
 }
@@ -107,6 +108,15 @@ export function hasServerPermission(perms: MyServerPermissions | null, name: str
   return perms.isOwner || perms.permissions.includes("administrator") || perms.permissions.includes(name)
 }
 
+// What the current user may do in a specific text channel. `canSend` already
+// folds in SEND_MESSAGES with the per-channel overrides the backend applied
+// (HU-7), so the UI reads the boolean directly instead of recomputing it.
+export interface MyChannelPermissions {
+  isOwner: boolean
+  permissions: string[]
+  canSend: boolean
+}
+
 export type TransferStatus = "pending" | "accepted" | "rejected" | "cancelled"
 
 // HU-7: an ownership transfer between the current owner (from) and a member (to).
@@ -136,6 +146,7 @@ export interface Channel {
   name: string
   type: "text" | "voice"
   topic?: string | null
+  categoryId?: string | null
   unread?: boolean
   mention?: number
 }
@@ -143,6 +154,7 @@ export interface Channel {
 export interface Category {
   id: string
   name: string
+  position: number
   channels: Channel[]
 }
 
@@ -168,6 +180,10 @@ export interface Message {
   authorId?: string
   color: string
   time: string
+  // Raw ISO timestamp from the backend, when known. Used to page history with
+  // `before` and to merge realtime/polled messages deterministically. Mock
+  // messages don't carry it.
+  createdAt?: string
   text: string
   edited?: boolean
   system?: boolean

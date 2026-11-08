@@ -1,6 +1,6 @@
 import AsyncStorage from "@react-native-async-storage/async-storage"
 
-import { newTraceHeaders } from "@/api/trace"
+import { newTraceHeaders } from "@/lib/api/trace"
 
 const API_BASE = process.env.EXPO_PUBLIC_API_URL ?? ""
 

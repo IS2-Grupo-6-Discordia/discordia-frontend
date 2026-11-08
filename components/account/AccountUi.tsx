@@ -97,6 +97,7 @@ export function AccountRow({
   label,
   value,
   hint,
+  footer,
   actionLabel,
   onPress,
   last,
@@ -105,54 +106,84 @@ export function AccountRow({
   label: string
   value: string
   hint?: string
+  footer?: ReactNode
   actionLabel: string
   onPress: () => void
   last?: boolean
 }) {
   return (
-    <TouchableOpacity
-      onPress={onPress}
-      accessibilityRole="button"
-      accessibilityLabel={`${actionLabel} ${label.toLowerCase()}`}
-      style={{
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 12,
-        paddingVertical: 14,
-        borderBottomWidth: last ? 0 : 1,
-        borderBottomColor: "rgba(255,255,255,0.07)",
-      }}
-    >
-      <View
+    <View style={{ borderBottomWidth: last ? 0 : 1, borderBottomColor: "rgba(255,255,255,0.07)" }}>
+      <TouchableOpacity
+        onPress={onPress}
+        accessibilityRole="button"
+        accessibilityLabel={`${actionLabel} ${label.toLowerCase()}`}
         style={{
-          width: 36,
-          height: 36,
-          borderRadius: 10,
+          flexDirection: "row",
           alignItems: "center",
-          justifyContent: "center",
-          backgroundColor: "rgba(55,214,192,0.12)",
+          gap: 12,
+          paddingTop: 14,
+          paddingBottom: footer ? 6 : 14,
         }}
       >
-        <Ionicons name={icon} size={17} color="#37D6C0" />
-      </View>
-      <View style={{ flex: 1, minWidth: 0 }}>
-        <Text style={{ color: "#8DA8AC", fontSize: 11, fontWeight: "700", textTransform: "uppercase", letterSpacing: 1 }}>
-          {label}
-        </Text>
-        <Text style={{ color: "#E6F3F3", fontSize: 14, fontWeight: "600", marginTop: 2 }} numberOfLines={1}>
-          {value}
-        </Text>
-        {hint ? (
-          <Text style={{ color: "#5E7E82", fontSize: 11.5, marginTop: 2 }} numberOfLines={2}>
-            {hint}
+        <View
+          style={{
+            width: 36,
+            height: 36,
+            borderRadius: 10,
+            alignItems: "center",
+            justifyContent: "center",
+            backgroundColor: "rgba(55,214,192,0.12)",
+          }}
+        >
+          <Ionicons name={icon} size={17} color="#37D6C0" />
+        </View>
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text style={{ color: "#8DA8AC", fontSize: 11, fontWeight: "700", textTransform: "uppercase", letterSpacing: 1 }}>
+            {label}
           </Text>
-        ) : null}
+          <Text style={{ color: "#E6F3F3", fontSize: 14, fontWeight: "600", marginTop: 2 }} numberOfLines={1}>
+            {value}
+          </Text>
+          {hint ? (
+            <Text style={{ color: "#5E7E82", fontSize: 11.5, marginTop: 2 }} numberOfLines={2}>
+              {hint}
+            </Text>
+          ) : null}
+        </View>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 2 }}>
+          <Text style={{ color: "#37D6C0", fontSize: 13, fontWeight: "700" }}>{actionLabel}</Text>
+          <Ionicons name="chevron-forward" size={15} color="#37D6C0" />
+        </View>
+      </TouchableOpacity>
+      {footer ? <View style={{ flexDirection: "row", paddingLeft: 48, paddingBottom: 14 }}>{footer}</View> : null}
+    </View>
+  )
+}
+
+export function UnverifiedBadge({ onVerify }: { onVerify?: () => void }) {
+  return (
+    <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+      <View
+        accessibilityLabel="Email no verificado"
+        style={{
+          flexDirection: "row",
+          alignItems: "center",
+          gap: 3,
+          paddingHorizontal: 6,
+          paddingVertical: 2,
+          borderRadius: 9999,
+          backgroundColor: "rgba(240,194,75,0.14)",
+        }}
+      >
+        <Ionicons name="alert-circle" size={12} color="#F0C24B" />
+        <Text style={{ color: "#F0C24B", fontSize: 10.5, fontWeight: "800" }}>No verificado</Text>
       </View>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 2 }}>
-        <Text style={{ color: "#37D6C0", fontSize: 13, fontWeight: "700" }}>{actionLabel}</Text>
-        <Ionicons name="chevron-forward" size={15} color="#37D6C0" />
-      </View>
-    </TouchableOpacity>
+      {onVerify ? (
+        <TouchableOpacity onPress={onVerify} accessibilityRole="button" accessibilityLabel="Verificar email" hitSlop={8}>
+          <Text style={{ color: "#F0C24B", fontSize: 11.5, fontWeight: "800", textDecorationLine: "underline" }}>Verificar</Text>
+        </TouchableOpacity>
+      ) : null}
+    </View>
   )
 }
 

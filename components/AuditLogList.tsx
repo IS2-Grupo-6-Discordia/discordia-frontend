@@ -2,10 +2,10 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import { ActivityIndicator, Pressable, ScrollView, Text, View } from "react-native"
 import type { ComponentProps } from "react"
 import { Ionicons } from "@expo/vector-icons"
-import { friendlyError } from "@/api/client"
-import { getUsersBatch } from "@/api/auth"
-import { AUDIT_PAGE_SIZE, listAuditLog, type AuditAction, type AuditEntry, type AuditGroup } from "@/api/audit"
-import { REPORT_REASONS } from "@/api/reports"
+import { friendlyError } from "@/lib/api/client"
+import { getUsersBatch } from "@/lib/api/auth"
+import { AUDIT_PAGE_SIZE, listAuditLog, type AuditAction, type AuditEntry, type AuditGroup } from "@/lib/api/audit"
+import { REPORT_REASONS } from "@/lib/api/reports"
 
 interface AuditLogListProps {
   serverId: string
