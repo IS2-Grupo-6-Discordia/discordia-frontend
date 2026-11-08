@@ -84,10 +84,11 @@ export function useChannelMessages({
       const known = new Set(knownIdsRef.current())
       const collected: Message[] = []
       let before: string | undefined
+      let beforeId: string | undefined
       for (let page = 0; page < RECOVERY_MAX_PAGES; page++) {
         let batch: Message[]
         try {
-          batch = await getMessages(ch.id, { limit: PAGE_LIMIT, before })
+          batch = await getMessages(ch.id, { limit: PAGE_LIMIT, before, beforeId })
         } catch {
           break
         }
@@ -95,12 +96,17 @@ export function useChannelMessages({
         collected.push(...batch)
         const overlapped = batch.some((m) => known.has(m.id))
         if (overlapped || batch.length < PAGE_LIMIT) break
-        const oldest = batch.reduce<string | undefined>(
-          (min, m) => (m.createdAt && (!min || m.createdAt < min) ? m.createdAt : min),
+        // Oldest message of the page: its (created_at, id) is the composite cursor
+        // for the next page back, so a same-millisecond message at the boundary is
+        // not skipped (HU-6 CA1). created_at here comes from the GET, so it matches
+        // the millisecond-precision value the backend stored and compares against.
+        const oldest = batch.reduce<Message | undefined>(
+          (min, m) => (m.createdAt && (!min?.createdAt || m.createdAt < min.createdAt) ? m : min),
           undefined,
         )
-        if (!oldest || oldest === before) break
-        before = oldest
+        if (!oldest?.createdAt || (oldest.createdAt === before && oldest.id === beforeId)) break
+        before = oldest.createdAt
+        beforeId = oldest.id
       }
       deliver(collected)
     },
