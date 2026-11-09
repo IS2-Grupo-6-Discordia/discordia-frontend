@@ -1,5 +1,6 @@
-import { useState } from "react"
+import { useState, useRef, useEffect } from "react"
 import { View, Text, Pressable, ActivityIndicator, useWindowDimensions } from "react-native"
+
 import { Ionicons } from "@expo/vector-icons"
 import { useRouter } from "expo-router"
 import PressableScale from "@/components/PressableScale"
@@ -43,6 +44,21 @@ export default function VoiceScreen() {
   // Phones: two smaller cards per row instead of one wide card each.
   const isNarrow = useWindowDimensions().width < 600
 
+  // HU-50: auto-navigate back when a private call ends (rejected, missed, or hung up).
+  const prevCallStatusRef = useRef(voice.callStatus)
+  useEffect(() => {
+    const prev = prevCallStatusRef.current
+    prevCallStatusRef.current = voice.callStatus
+    if (
+      prev !== "idle" &&
+      voice.callStatus === "idle" &&
+      !voice.call &&
+      voice.status === "idle"
+    ) {
+      if (router.canGoBack()) router.back()
+    }
+  }, [voice.callStatus, voice.call, voice.status])
+
   const handleToggleMic = async () => {
     setMicError("")
     try {
@@ -50,6 +66,160 @@ export default function VoiceScreen() {
     } catch (err) {
       setMicError(err instanceof Error ? err.message : "No pudimos cambiar el estado de tu micrófono.")
     }
+  }
+
+  // HU-50: outgoing call ringing or connecting.
+  if (voice.call && voice.callStatus !== "idle" && voice.callStatus !== "connected") {
+    const peerName = voice.call.peerName ?? "..."
+    const isOutgoing = voice.call.direction === "outgoing"
+    return (
+      <View style={{ flex: 1, backgroundColor: "#0A1620", alignItems: "center", justifyContent: "center", padding: 24 }}>
+        <View
+          style={{
+            width: 64,
+            height: 64,
+            borderRadius: 9999,
+            alignItems: "center",
+            justifyContent: "center",
+            backgroundColor: "rgba(55,214,192,0.12)",
+            borderWidth: 1,
+            borderColor: "rgba(55,214,192,0.30)",
+            marginBottom: 18,
+          }}
+        >
+          <Ionicons name="call" size={28} color="#37D6C0" />
+        </View>
+        <Text style={{ color: "#E6F3F3", fontWeight: "800", fontSize: 16, letterSpacing: -0.2 }}>
+          {voice.callStatus === "connecting" ? "Conectando..." : isOutgoing ? "Llamando..." : "Entrando..."}
+        </Text>
+        <Text style={{ color: "#8DA8AC", fontSize: 13, marginTop: 6 }}>{peerName}</Text>
+        {isOutgoing && voice.callStatus === "ringing" ? (
+          <PressableScale
+            onPress={() => voice.rejectIncomingCall()}
+            hoverStyle={{ backgroundColor: "#FF6B5C" }}
+            style={{ marginTop: 24, borderRadius: 10, paddingVertical: 11, paddingHorizontal: 20, backgroundColor: "#FF7F72" }}
+          >
+            <Text style={{ fontWeight: "700", fontSize: 14, color: "#04211D" }}>Cancelar</Text>
+          </PressableScale>
+        ) : (
+          <ActivityIndicator color="#37D6C0" style={{ marginTop: 20 }} />
+        )}
+      </View>
+    )
+  }
+
+  // HU-50: active private call.
+  if (voice.call && voice.callStatus === "connected") {
+    const peerName = voice.call.peerName ?? "Llamada"
+    return (
+      <View style={{ flex: 1, backgroundColor: "#0A1620" }}>
+        {/* Header */}
+        <View
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 10,
+            paddingHorizontal: isNarrow ? 14 : 20,
+            height: 52,
+            borderBottomWidth: 1,
+            borderBottomColor: "rgba(255,255,255,0.10)",
+            backgroundColor: "rgba(255,255,255,0.03)",
+          }}
+        >
+          <Ionicons name="call" size={17} color="#4FD69C" />
+          <View style={{ flex: 1 }}>
+            <Text style={{ color: "#E6F3F3", fontWeight: "700", fontSize: 13.5 }} numberOfLines={1}>
+              Llamada con {peerName}
+            </Text>
+          </View>
+          <View
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 6,
+              paddingHorizontal: 10,
+              paddingVertical: 4,
+              borderRadius: 9999,
+              backgroundColor: "rgba(79,214,156,0.14)",
+            }}
+          >
+            <View style={{ width: 7, height: 7, borderRadius: 9999, backgroundColor: "#4FD69C" }} />
+            <Text style={{ color: "#4FD69C", fontWeight: "700", fontSize: 11 }}>Conectado</Text>
+          </View>
+        </View>
+
+        <VoiceStage
+          participants={participants}
+          layout={layout}
+          pinnedId={pinnedId}
+          onTogglePin={(id) => setPinnedId((current) => (current === id ? null : id))}
+          onToggleLocalMute={voice.toggleLocalMute}
+        />
+
+        {micError ? (
+          <Text style={{ color: "#FF9E94", fontSize: 12, textAlign: "center", paddingHorizontal: 20, paddingBottom: 8 }}>
+            {micError}
+          </Text>
+        ) : null}
+
+        {/* Control bar */}
+        <View
+          style={{
+            flexDirection: "row",
+            justifyContent: "center",
+            paddingHorizontal: 20,
+            paddingVertical: 16,
+            borderTopWidth: 1,
+            borderTopColor: "rgba(255,255,255,0.10)",
+            backgroundColor: "rgba(255,255,255,0.03)",
+          }}
+        >
+          <View style={{ alignItems: "center", gap: 7, width: isNarrow ? 66 : 88 }}>
+            <PressableScale
+              onPress={handleToggleMic}
+              accessibilityLabel={voice.micEnabled ? "Silenciar micrófono" : "Activar micrófono"}
+              pressedScale={0.9}
+              hoverStyle={{ backgroundColor: "rgba(255,255,255,0.16)" }}
+              style={{
+                width: 52,
+                height: 52,
+                borderRadius: 9999,
+                alignItems: "center",
+                justifyContent: "center",
+                backgroundColor: "rgba(255,255,255,0.10)",
+                borderWidth: 1,
+                borderColor: "rgba(255,255,255,0.14)",
+              }}
+            >
+              <MicIcon muted={!voice.micEnabled} size={22} color="#E6F3F3" />
+            </PressableScale>
+            <Text style={{ color: "#C9DADC", fontWeight: "700", fontSize: 10 }}>
+              {voice.micEnabled ? "Silenciar" : "Activar"}
+            </Text>
+          </View>
+
+          <View style={{ alignItems: "center", gap: 7, width: isNarrow ? 66 : 88 }}>
+            <PressableScale
+              onPress={() => voice.endCurrentCall()}
+              accessibilityLabel="Colgar llamada"
+              pressedScale={0.9}
+              hoverStyle={{ backgroundColor: "#FF6B5C" }}
+              style={{
+                width: 52,
+                height: 52,
+                borderRadius: 9999,
+                alignItems: "center",
+                justifyContent: "center",
+                backgroundColor: "#FF7F72",
+              }}
+            >
+              <Ionicons name="call" size={22} color="#04211D" style={{ transform: [{ rotate: "135deg" }] }} />
+            </PressableScale>
+            <Text style={{ color: "#FF7F72", fontWeight: "700", fontSize: 10 }}>Colgar</Text>
+          </View>
+        </View>
+      </View>
+    )
   }
 
   if (status === "idle" || !channel) {
