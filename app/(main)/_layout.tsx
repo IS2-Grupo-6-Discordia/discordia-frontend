@@ -5,6 +5,7 @@ import UserMenu from "@/components/UserMenu"
 import SessionSplash from "@/components/SessionSplash"
 import { useWakeState } from "@/lib/api/wake"
 import { VoiceProvider } from "@/context/VoiceContext"
+import IncomingCallModal from "@/components/IncomingCallModal"
 
 
 export default function MainLayout() {
@@ -31,6 +32,7 @@ export default function MainLayout() {
 
   return (
     <VoiceProvider>
+      <IncomingCallModal />
       <Tabs
         screenOptions={{
           headerStyle: {

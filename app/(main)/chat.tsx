@@ -281,6 +281,8 @@ const UNREAD_REFRESH_MS = 8_000
 // CA4: máximo de caracteres de un mensaje. Único valor compartido; se cuenta por
 // code points sobre el texto trimeado, igual que el backend (MAX_MESSAGE_LENGTH).
 const MESSAGE_MAX = 4000
+// HU-6 CA1: page size for loading older history, matching useChannelMessages' PAGE_LIMIT.
+const HISTORY_PAGE = 50
 // A partir de acá mostramos el contador, para no distraer en mensajes cortos.
 const MESSAGE_COUNTER_FROM = MESSAGE_MAX - 200
 
@@ -370,6 +372,19 @@ export default function ChatScreen() {
   const [categories, setCategories] = useState<Category[]>([])
   const [roles, setRoles] = useState<RoleGroup[]>([])
   const [messages, setMessages] = useState<Message[]>([])
+  // HU-6 CA1 (load older history): whether older pages may still exist, an
+  // in-flight guard to drop duplicate requests, and a transient error that offers
+  // a retry without discarding what is already loaded.
+  const [hasMoreHistory, setHasMoreHistory] = useState(false)
+  const [loadingOlder, setLoadingOlder] = useState(false)
+  const [historyError, setHistoryError] = useState(false)
+  const loadingOlderRef = useRef(false)
+  const hasMoreHistoryRef = useRef(false)
+  hasMoreHistoryRef.current = hasMoreHistory
+  // Current open channel read inside async callbacks to discard responses that
+  // arrive after the user switched channels.
+  const activeChannelRef = useRef(activeChannel)
+  activeChannelRef.current = activeChannel
   const [unread, setUnread] = useState<UnreadSummary>(EMPTY_UNREAD)
 
   // Add-server modal (HU-1 create / HU-3 join)
@@ -647,6 +662,12 @@ export default function ChatScreen() {
   }, [activeServer, setServerSuspended])
 
   useEffect(() => {
+    // HU-6 CA1: every channel switch restarts the pagination state, so a stale
+    // page, loading flag or error from the previous channel can never leak in.
+    loadingOlderRef.current = false
+    setLoadingOlder(false)
+    setHistoryError(false)
+    setHasMoreHistory(false)
     if (!activeChannel) {
       setMessages([])
       return
@@ -656,7 +677,11 @@ export default function ChatScreen() {
       .then((msgs) => {
         // Descartar una respuesta que llega tarde de un canal anterior: no puede
         // meter mensajes en el canal abierto ahora.
-        if (active) setMessages(msgs)
+        if (!active) return
+        setMessages(msgs)
+        // A full first page on a real channel means there may be older messages
+        // to page back through; mock/example channels never paginate.
+        setHasMoreHistory(UUID_RE.test(activeChannel) && msgs.length >= HISTORY_PAGE)
       })
       .catch((err) => {
         if (!active) return
@@ -712,6 +737,94 @@ export default function ChatScreen() {
       return same ? prev : merged
     })
   }, [])
+
+  // HU-6 CA1: fetch the page immediately older than the oldest loaded message and
+  // merge it in. mergeMessages is union-by-id, so live/reconciled/recovered
+  // messages are never dropped (protects CA2/CA3). Guarded against duplicate
+  // requests and against a response arriving after a channel switch.
+  const loadOlder = useCallback(() => {
+    const ch = activeChannelRef.current
+    if (!ch || !UUID_RE.test(ch)) return // mock/example channels: no pagination
+    if (loadingOlderRef.current || !hasMoreHistoryRef.current) return
+    // Messages are sorted oldest-first, so [0] is the oldest one loaded. Its id is
+    // the composite-cursor tiebreak (HU-6 CA1): created_at comes from a GET page
+    // (millisecond precision), so it matches the stored value the backend compares.
+    const oldest = messagesRef.current[0]
+    const before = oldest?.createdAt
+    if (!before) return
+    loadingOlderRef.current = true
+    setLoadingOlder(true)
+    setHistoryError(false)
+    getMessages(ch, { limit: HISTORY_PAGE, before, beforeId: oldest.id })
+      .then((batch) => {
+        if (activeChannelRef.current !== ch) return // channel changed: discard
+        // A short page means we reached the start: hide the control for good.
+        if (batch.length < HISTORY_PAGE) setHasMoreHistory(false)
+        mergeMessages(batch)
+      })
+      .catch((err) => {
+        if (activeChannelRef.current !== ch) return
+        // 423 -> existing suspended UI. 503/other -> keep what's loaded, offer retry.
+        if (err instanceof ApiError && err.status === 423) setServerSuspended(activeServer, true)
+        else setHistoryError(true)
+      })
+      .finally(() => {
+        if (activeChannelRef.current === ch) {
+          loadingOlderRef.current = false
+          setLoadingOlder(false)
+        }
+      })
+  }, [mergeMessages, setServerSuspended, activeServer])
+
+  // HU-6 CA1: the pager shown above the message list. Only real channels with at
+  // least one loaded message get it; mock/example channels never paginate.
+  const renderHistoryHeader = () => {
+    if (!UUID_RE.test(activeChannel) || messages.length === 0) return null
+    if (loadingOlder) {
+      return (
+        <View style={{ paddingVertical: 10, alignItems: "center" }}>
+          <ActivityIndicator size="small" color="#37D6C0" />
+        </View>
+      )
+    }
+    if (historyError) {
+      return (
+        <View style={{ paddingVertical: 10, alignItems: "center", gap: 6 }}>
+          <Text style={{ color: "#8DA8AC", fontSize: 11.5 }}>
+            No se pudieron cargar los mensajes anteriores.
+          </Text>
+          <PressableScale
+            onPress={loadOlder}
+            accessibilityLabel="Reintentar cargar mensajes anteriores"
+            style={{ paddingHorizontal: 14, paddingVertical: 6, borderRadius: 8, backgroundColor: "rgba(55,214,192,0.14)" }}
+          >
+            <Text style={{ color: "#37D6C0", fontSize: 12, fontWeight: "700" }}>Reintentar</Text>
+          </PressableScale>
+        </View>
+      )
+    }
+    if (hasMoreHistory) {
+      return (
+        <View style={{ paddingVertical: 10, alignItems: "center" }}>
+          <PressableScale
+            onPress={loadOlder}
+            accessibilityLabel="Cargar mensajes anteriores"
+            hoverStyle={{ backgroundColor: "rgba(55,214,192,0.22)" }}
+            style={{ paddingHorizontal: 14, paddingVertical: 6, borderRadius: 8, backgroundColor: "rgba(55,214,192,0.14)" }}
+          >
+            <Text style={{ color: "#37D6C0", fontSize: 12, fontWeight: "700" }}>
+              Cargar mensajes anteriores
+            </Text>
+          </PressableScale>
+        </View>
+      )
+    }
+    return (
+      <View style={{ paddingVertical: 10, alignItems: "center" }}>
+        <Text style={{ color: "#5F7B7F", fontSize: 11, fontWeight: "600" }}>Inicio del canal</Text>
+      </View>
+    )
+  }
 
   useEffect(() => {
     if (!realServerIds) {
@@ -2552,8 +2665,13 @@ export default function ChatScreen() {
             {canCreateInvite ? (
               <PressableScale
                 onPress={handleGenerateInvite}
+                accessibilityLabel="Invitar al servidor"
                 hoverStyle={{ backgroundColor: "rgba(55,214,192,0.22)" }}
                 style={{
+                  flexGrow: 1,
+                  flexShrink: 0,
+                  flexBasis: 92,
+                  minWidth: 92,
                   flexDirection: "row",
                   alignItems: "center",
                   justifyContent: "center",
@@ -2565,7 +2683,12 @@ export default function ChatScreen() {
                 }}
               >
                 <Ionicons name="person-add-outline" size={13} color="#37D6C0" />
-                <Text style={{ color: "#37D6C0", fontSize: 11.5, fontWeight: "700" }}>Invitar</Text>
+                <Text
+                  numberOfLines={1}
+                  style={{ color: "#37D6C0", fontSize: 11.5, fontWeight: "700", flexShrink: 0 }}
+                >
+                  Invitar
+                </Text>
               </PressableScale>
             ) : null}
             <PressableScale
@@ -3112,6 +3235,11 @@ export default function ChatScreen() {
           data={messages}
           keyExtractor={(m) => m.id}
           style={{ flex: 1 }}
+          // HU-6 CA1: keep the reading position when older messages are prepended,
+          // so the view does not jump. ListHeaderComponent renders the pager above
+          // the oldest message (the list is not inverted: newest is at the bottom).
+          maintainVisibleContentPosition={{ minIndexForVisible: 1 }}
+          ListHeaderComponent={renderHistoryHeader()}
           contentContainerStyle={
             messages.length === 0
               ? { flexGrow: 1, justifyContent: "center", alignItems: "center", padding: 24 }
