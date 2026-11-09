@@ -2554,11 +2554,11 @@ export default function ChatScreen() {
                 onPress={handleGenerateInvite}
                 hoverStyle={{ backgroundColor: "rgba(55,214,192,0.22)" }}
                 style={{
-                  flex: 1,
                   flexDirection: "row",
                   alignItems: "center",
                   justifyContent: "center",
                   gap: 5,
+                  paddingHorizontal: 12,
                   paddingVertical: 6,
                   borderRadius: 8,
                   backgroundColor: "rgba(55,214,192,0.12)",
