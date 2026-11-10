@@ -34,6 +34,15 @@ export async function markChannelRead(channelId: string): Promise<void> {
   await api(`/channels/${channelId}/read`, { method: "POST" })
 }
 
+export async function markAllRead(serverIds: string[]): Promise<void> {
+  for (let i = 0; i < serverIds.length; i += MAX_SERVER_IDS) {
+    await api("/read-all", {
+      method: "POST",
+      body: JSON.stringify({ server_ids: serverIds.slice(i, i + MAX_SERVER_IDS) }),
+    })
+  }
+}
+
 export function withoutChannel(summary: UnreadSummary, channelId: string): UnreadSummary {
   const removed = summary.channels[channelId]
   if (!removed) return summary
@@ -48,5 +57,15 @@ export function withoutChannel(summary: UnreadSummary, channelId: string): Unrea
     if (unread <= 0) delete servers[serverId]
     else servers[serverId] = { unread, mentions: Math.max(0, mentions) }
   }
+  return { channels, servers }
+}
+
+export function withoutServer(summary: UnreadSummary, serverId: string): UnreadSummary {
+  const channels: UnreadSummary["channels"] = {}
+  for (const [id, counts] of Object.entries(summary.channels)) {
+    if (counts.serverId !== serverId) channels[id] = counts
+  }
+  const servers = { ...summary.servers }
+  delete servers[serverId]
   return { channels, servers }
 }
