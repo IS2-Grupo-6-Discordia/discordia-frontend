@@ -11,6 +11,7 @@ import {
   Keyboard,
   ActivityIndicator,
   Image,
+  Modal,
   useWindowDimensions,
 } from "react-native"
 import type { ViewStyle, TextStyle } from "react-native"
@@ -67,7 +68,9 @@ import {
   unbanMember,
   getUnreadSummary,
   markChannelRead,
+  markAllRead,
   withoutChannel,
+  withoutServer,
   extractMentionIds,
   EMPTY_UNREAD,
 } from "@/lib/api"
@@ -337,7 +340,7 @@ export default function ChatScreen() {
   const [activeChannel, setActiveChannel] = useState("")
   const [showMembers, setShowMembers] = useState(false)
   const [input, setInput] = useState("")
-  const { width: windowWidth } = useWindowDimensions()
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions()
   const isNarrow = windowWidth < NARROW_BREAKPOINT
   // Phones only: which single pane is on screen.
   const [mobilePane, setMobilePane] = useState<"channels" | "chat">("channels")
@@ -386,6 +389,11 @@ export default function ChatScreen() {
   const activeChannelRef = useRef(activeChannel)
   activeChannelRef.current = activeChannel
   const [unread, setUnread] = useState<UnreadSummary>(EMPTY_UNREAD)
+  // "Marcar todo como leído" también apaga los indicadores de demostración del servidor de
+  // ejemplo, que no vienen del backend. Mientras el pedido está en vuelo, el polling no pisa el
+  // resumen ya vaciado.
+  const [demoCleared, setDemoCleared] = useState(false)
+  const markingAllRef = useRef(false)
 
   // Add-server modal (HU-1 create / HU-3 join)
   const [addModalOpen, setAddModalOpen] = useState(false)
@@ -835,7 +843,7 @@ export default function ChatScreen() {
     const load = () =>
       getUnreadSummary(realServerIds.split(","))
         .then((summary) => {
-          if (!active) return
+          if (!active || markingAllRef.current) return
           const channel = viewedRef.current
           setUnread(channel ? withoutChannel(summary, channel) : summary)
         })
@@ -864,11 +872,78 @@ export default function ChatScreen() {
   // ejemplo los valores de demostración que ya traía.
   const channelUnread = (ch: { id: string; unread?: boolean; mention?: number }) => {
     const u = unread.channels[ch.id]
+    if (demoCleared) return { unread: !!u, mentions: u ? u.mentions : 0 }
     return { unread: !!u || !!ch.unread, mentions: u ? u.mentions : (ch.mention ?? 0) }
   }
   const serverUnread = (s: Server) => {
     const u = unread.servers[s.id]
+    if (demoCleared) return { unread: !!u, mentions: u ? u.mentions : 0 }
     return { unread: !!u || !!s.unread || !!s.mention, mentions: u ? u.mentions : (s.mention ?? 0) }
+  }
+  const hasAnyUnread = servers.some((s) => serverUnread(s).unread)
+
+  // HU-2 CA2: apaga todos los indicadores de no leído. Es optimista: se vacía el resumen al
+  // instante y, si el pedido falla, se restaura y se avisa.
+  const handleMarkAllRead = () => {
+    if (markingAllRef.current || !hasAnyUnread) return
+    const previous = unread
+    const previousDemoCleared = demoCleared
+    setUnread(EMPTY_UNREAD)
+    setDemoCleared(true)
+    if (!realServerIds) return
+    markingAllRef.current = true
+    markAllRead(realServerIds.split(","))
+      .catch((err) => {
+        setUnread(previous)
+        setDemoCleared(previousDemoCleared)
+        setBannerError(friendlyError(err))
+      })
+      .finally(() => {
+        markingAllRef.current = false
+      })
+  }
+  
+  type ContextMenu = { x: number; y: number; w: number; kind: "server" | "channel"; id: string; full?: boolean }
+  const [serverMenu, setServerMenu] = useState<ContextMenu | null>(null)
+  const serverNameRef = useRef<View>(null)
+  const openServerMenu = () => {
+    serverNameRef.current?.measureInWindow((x, y, w, h) =>
+      setServerMenu({ x, y: y + h + 4, w, kind: "server", id: activeServer, full: true }),
+    )
+  }
+  const openContextMenuAt = (event: any, kind: "server" | "channel", id: string) => {
+    event?.preventDefault?.()
+    const native = event?.nativeEvent ?? {}
+    const x = event?.clientX ?? native.pageX ?? native.locationX ?? 0
+    const y = event?.clientY ?? native.pageY ?? native.locationY ?? 0
+    setServerMenu({ x, y, w: 0, kind, id })
+  }
+  const closeServerMenu = () => setServerMenu(null)
+
+  const handleMarkServerRead = (serverId: string) => {
+    closeServerMenu()
+    if (markingAllRef.current || !unread.servers[serverId]) return
+    const previous = unread
+    setUnread((prev) => withoutServer(prev, serverId))
+    markingAllRef.current = true
+    markAllRead([serverId])
+      .catch((err) => {
+        setUnread(previous)
+        setBannerError(friendlyError(err))
+      })
+      .finally(() => {
+        markingAllRef.current = false
+      })
+  }
+  const handleMarkChannelRead = (channelId: string) => {
+    closeServerMenu()
+    if (!unread.channels[channelId]) return
+    const previous = unread
+    setUnread((prev) => withoutChannel(prev, channelId))
+    markChannelRead(channelId).catch((err) => {
+      setUnread(previous)
+      setBannerError(friendlyError(err))
+    })
   }
 
   // HU-4/HU-5 gating: load the current user's admin permissions for the active
@@ -2491,6 +2566,12 @@ export default function ChatScreen() {
               ) : null}
               <PressableScale
                 onPress={() => setActiveServer(s.id)}
+                {...(isRealServerId(s.id)
+                  ? {
+                      onLongPress: (e: any) => openContextMenuAt(e, "server", s.id),
+                      onContextMenu: (e: any) => openContextMenuAt(e, "server", s.id),
+                    }
+                  : {})}
                 accessibilityLabel={
                   serverUnread(s).mentions > 0
                     ? `${s.name}, ${serverUnread(s).mentions} menciones sin leer`
@@ -2599,7 +2680,121 @@ export default function ChatScreen() {
             </PressableScale>
           </View>
         </ScrollView>
+        {!isNarrow ? (
+          <View
+            {...(Platform.OS === "web"
+              ? { onMouseEnter: showTooltip("Marcar todo como leído"), onMouseLeave: hideTooltip }
+              : {})}
+          >
+            <PressableScale
+              onPress={handleMarkAllRead}
+              disabled={!hasAnyUnread}
+              accessibilityLabel={
+                hasAnyUnread ? "Marcar todo como leído" : "Marcar todo como leído (no hay nada sin leer)"
+              }
+              pressedScale={0.88}
+              hoverStyle={{ backgroundColor: "rgba(55,214,192,0.14)", borderColor: "rgba(55,214,192,0.55)" }}
+              style={{
+                alignItems: "center",
+                justifyContent: "center",
+                width: 34,
+                height: 34,
+                borderRadius: 15,
+                backgroundColor: "rgba(255,255,255,0.10)",
+                borderWidth: 1,
+                borderColor: "rgba(255,255,255,0.13)",
+                opacity: hasAnyUnread ? 1 : 0.35,
+              }}
+            >
+              <Ionicons name="checkmark-done-outline" size={17} color="#37D6C0" />
+            </PressableScale>
+          </View>
+        ) : null}
       </View>
+
+     <Modal visible={serverMenu !== null} transparent animationType="none" onRequestClose={closeServerMenu}>
+        <Pressable
+          style={{ flex: 1 }}
+          onPress={closeServerMenu}
+          accessibilityLabel="Cerrar menú"
+          {...({ onContextMenu: (e: any) => e?.preventDefault?.() } as object)}
+        >
+          {serverMenu ? (
+            <View
+              style={{
+                position: "absolute",
+                left: Math.max(8, Math.min(serverMenu.x, windowWidth - Math.max(serverMenu.w, 220) - 8)),
+                top: Math.max(8, Math.min(serverMenu.y, windowHeight - 180)),
+                width: Math.max(serverMenu.w, 220),
+                paddingVertical: 6,
+                borderRadius: 10,
+                backgroundColor: "#1B2630",
+                borderWidth: 1,
+                borderColor: "rgba(255,255,255,0.13)",
+              }}
+            >
+              {(() => {
+                const isChannel = serverMenu.kind === "channel"
+                const hasUnreadHere = isChannel ? !!unread.channels[serverMenu.id] : !!unread.servers[serverMenu.id]
+                const item = (
+                  label: string,
+                  icon: React.ComponentProps<typeof Ionicons>["name"],
+                  onPress: () => void,
+                  opts: { disabled?: boolean; danger?: boolean } = {},
+                ) => (
+                  <PressableScale
+                    key={label}
+                    onPress={onPress}
+                    disabled={opts.disabled}
+                    accessibilityLabel={label}
+                    hoverStyle={{ backgroundColor: opts.danger ? "rgba(255,127,114,0.14)" : "rgba(55,214,192,0.12)" }}
+                    style={{
+                      flexDirection: "row",
+                      alignItems: "center",
+                      gap: 10,
+                      paddingHorizontal: 14,
+                      paddingVertical: 10,
+                      opacity: opts.disabled ? 0.4 : 1,
+                    }}
+                  >
+                    <Ionicons name={icon} size={16} color={opts.danger ? "#FF7F72" : "#37D6C0"} />
+                    <Text style={{ color: opts.danger ? "#FF7F72" : "#E6F3F3", fontSize: 13, fontWeight: "600" }}>
+                      {label}
+                    </Text>
+                  </PressableScale>
+                )
+                return (
+                  <>
+                    {item(
+                      "Marcar como leído",
+                      "checkmark-done-outline",
+                      () => (isChannel ? handleMarkChannelRead(serverMenu.id) : handleMarkServerRead(serverMenu.id)),
+                      { disabled: !hasUnreadHere },
+                    )}
+                    {serverMenu.full && !activeSuspended && canCreateInvite
+                      ? item("Invitar al servidor", "person-add-outline", () => {
+                          closeServerMenu()
+                          handleGenerateInvite()
+                        })
+                      : null}
+                    {serverMenu.full && !activeSuspended
+                      ? item(
+                          "Salir del servidor",
+                          "exit-outline",
+                          () => {
+                            closeServerMenu()
+                            openLeaveModal()
+                          },
+                          { danger: true },
+                        )
+                      : null}
+                  </>
+                )
+              })()}
+            </View>
+          ) : null}
+        </Pressable>
+      </Modal>
 
       {/* Server rail hover tooltip (web only) */}
       {Platform.OS === "web" && tooltip ? (
@@ -2638,6 +2833,29 @@ export default function ChatScreen() {
           borderRightColor: "rgba(255,255,255,0.13)",
         }}
       >
+        {isNarrow ? (
+          <PressableScale
+            onPress={handleMarkAllRead}
+            disabled={!hasAnyUnread}
+            accessibilityLabel="Marcar todo como leído"
+            hoverStyle={{ backgroundColor: "rgba(55,214,192,0.14)" }}
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 8,
+              paddingHorizontal: 14,
+              paddingVertical: 11,
+              borderBottomWidth: 1,
+              borderBottomColor: "rgba(255,255,255,0.13)",
+              opacity: hasAnyUnread ? 1 : 0.4,
+            }}
+          >
+            <Ionicons name="checkmark-done-outline" size={16} color="#37D6C0" />
+            <Text style={{ color: "#37D6C0", fontSize: 13, fontWeight: "700" }}>
+              Marcar todo como leído
+            </Text>
+          </PressableScale>
+        ) : null}
         {/* Server name header: name on its own row so long names stay readable,
             actions on a compact row underneath. Hidden when no real server is
             selected (e.g. the user has none) so Invitar/Salir never show for an
@@ -2654,61 +2872,21 @@ export default function ChatScreen() {
               resizeMode="cover"
             />
           ) : null}
-          <Text style={{ color: "#E6F3F3", fontWeight: "700", fontSize: 14 }} numberOfLines={2}>
-            {servers.find((s) => s.id === activeServer)?.name ?? ""}
-          </Text>
-          {/* Primary actions. "Invitar" is gated on CREATE_INVITE (canCreateInvite):
-              when shown it grows to anchor the row; "Salir" keeps its natural width
-              beside it, and is always available to every member. */}
+          <PressableScale
+            onPress={openServerMenu}
+            accessibilityLabel={`Opciones del servidor ${activeServerName}`}
+            hoverStyle={{ backgroundColor: "rgba(255,255,255,0.06)" }}
+            style={{ borderRadius: 8, marginHorizontal: -4, paddingHorizontal: 4, paddingVertical: 2 }}
+          >
+            <View ref={serverNameRef} collapsable={false} style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+              <Text style={{ flex: 1, color: "#E6F3F3", fontWeight: "700", fontSize: 14 }} numberOfLines={2}>
+                {activeServerName}
+              </Text>
+              <Ionicons name="chevron-down" size={14} color="#8DA8AC" />
+            </View>
+          </PressableScale>
           <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6, display: activeSuspended ? "none" : "flex" }}>
 
-            {canCreateInvite ? (
-              <PressableScale
-                onPress={handleGenerateInvite}
-                accessibilityLabel="Invitar al servidor"
-                hoverStyle={{ backgroundColor: "rgba(55,214,192,0.22)" }}
-                style={{
-                  flexGrow: 1,
-                  flexShrink: 0,
-                  flexBasis: 92,
-                  minWidth: 92,
-                  flexDirection: "row",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  gap: 5,
-                  paddingHorizontal: 12,
-                  paddingVertical: 6,
-                  borderRadius: 8,
-                  backgroundColor: "rgba(55,214,192,0.12)",
-                }}
-              >
-                <Ionicons name="person-add-outline" size={13} color="#37D6C0" />
-                <Text
-                  numberOfLines={1}
-                  style={{ color: "#37D6C0", fontSize: 11.5, fontWeight: "700", flexShrink: 0 }}
-                >
-                  Invitar
-                </Text>
-              </PressableScale>
-            ) : null}
-            <PressableScale
-              onPress={openLeaveModal}
-              accessibilityLabel="Salir del servidor"
-              hoverStyle={{ backgroundColor: "rgba(255,127,114,0.14)" }}
-              style={{
-                flexDirection: "row",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: 5,
-                paddingHorizontal: 12,
-                paddingVertical: 6,
-                borderRadius: 8,
-                backgroundColor: "rgba(255,255,255,0.05)",
-              }}
-            >
-              <Ionicons name="exit-outline" size={13} color="#8DA8AC" />
-              <Text style={{ color: "#8DA8AC", fontSize: 11.5, fontWeight: "600" }}>Salir</Text>
-            </PressableScale>
             {!isOwner && isRealServerId(activeServer) ? (
               <PressableScale
                 onPress={() => setReportTarget({ type: "server", serverId: activeServer, name: activeServerName })}
@@ -2913,6 +3091,12 @@ export default function ChatScreen() {
                   <View key={ch.id}>
                   <PressableScale
                     onPress={() => handleChannelPress(ch)}
+                    {...(ch.type === "text" && isRealServerId(activeServer)
+                      ? {
+                          onLongPress: (e: any) => openContextMenuAt(e, "channel", ch.id),
+                          onContextMenu: (e: any) => openContextMenuAt(e, "channel", ch.id),
+                        }
+                      : {})}
                     accessibilityLabel={
                       ch.type === "voice"
                         ? `Canal de voz ${ch.name}`
