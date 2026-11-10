@@ -87,12 +87,6 @@ export default function MainLayout() {
           }}
         />
         <Tabs.Screen
-          name="backoffice"
-          options={{
-            title: "Backoffice",
-          }}
-        />
-        <Tabs.Screen
           name="account"
           options={{ href: null, title: "Mi cuenta" }}
         />
