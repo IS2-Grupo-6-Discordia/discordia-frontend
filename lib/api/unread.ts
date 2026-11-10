@@ -5,8 +5,14 @@ import type { UnreadSummary } from "./types"
 const MAX_SERVER_IDS = 50
 
 interface BackendUnreadSummary {
-  channels: { channel_id: string; server_id: string; unread_count: number; mention_count: number }[]
-  servers: { server_id: string; unread_count: number; mention_count: number }[]
+  channels: {
+    channel_id: string
+    server_id: string
+    unread_count: number
+    mention_count: number
+    muted?: boolean
+  }[]
+  servers: { server_id: string; unread_count: number; mention_count: number; muted?: boolean }[]
 }
 
 export const EMPTY_UNREAD: UnreadSummary = { channels: {}, servers: {} }
@@ -21,10 +27,15 @@ export async function getUnreadSummary(serverIds: string[]): Promise<UnreadSumma
         unread: c.unread_count,
         mentions: c.mention_count,
         serverId: c.server_id,
+        muted: !!c.muted,
       }
     }
     for (const s of res.servers) {
-      summary.servers[s.server_id] = { unread: s.unread_count, mentions: s.mention_count }
+      summary.servers[s.server_id] = {
+        unread: s.unread_count,
+        mentions: s.mention_count,
+        muted: !!s.muted,
+      }
     }
   }
   return summary
@@ -55,7 +66,11 @@ export function withoutChannel(summary: UnreadSummary, channelId: string): Unrea
     const unread = server.unread - removed.unread
     const mentions = server.mentions - removed.mentions
     if (unread <= 0) delete servers[serverId]
-    else servers[serverId] = { unread, mentions: Math.max(0, mentions) }
+    else {
+      const remaining = Object.values(channels).filter((c) => c.serverId === serverId)
+      const muted = remaining.length > 0 && remaining.every((c) => c.muted)
+      servers[serverId] = { unread, mentions: Math.max(0, mentions), muted }
+    }
   }
   return { channels, servers }
 }
