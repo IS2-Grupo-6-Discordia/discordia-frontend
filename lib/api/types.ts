@@ -214,6 +214,12 @@ export interface UnreadCounts {
   unread: number
   mentions: number
   serverId?: string
+  muted?: boolean
+}
+
+export interface MuteState {
+  servers: Record<string, true>
+  channels: Record<string, true>
 }
 
 export interface UnreadSummary {

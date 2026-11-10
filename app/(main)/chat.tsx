@@ -71,6 +71,11 @@ import {
   markAllRead,
   withoutChannel,
   withoutServer,
+  getMutes,
+  setChannelMuted,
+  setServerMuted,
+  withMute,
+  EMPTY_MUTES,
   extractMentionIds,
   EMPTY_UNREAD,
 } from "@/lib/api"
@@ -88,6 +93,7 @@ import type {
   ServerBan,
   MyServerPermissions,
   UnreadSummary,
+  MuteState,
 } from "@/lib/api/types"
 import { hasServerPermission } from "@/lib/api/types"
 import { ApiError, friendlyError } from "@/lib/api/client"
@@ -350,16 +356,16 @@ export default function ChatScreen() {
   // Web-only hover tooltip for the server rail: shows the full server name next
   // to its icon, so long names stay discoverable even when the icon is just an
   // abbreviation or a photo.
-  const [tooltip, setTooltip] = useState<{ label: string; y: number } | null>(null)
+  const [tooltip, setTooltip] = useState<{ label: string; sub?: string; y: number } | null>(null)
   const [hoveredMember, setHoveredMember] = useState<string | null>(null)
   const [hoveredMessage, setHoveredMessage] = useState<string | null>(null)
 
-  const showTooltip = (label: string) => (e: any) => {
+  const showTooltip = (label: string, sub?: string) => (e: any) => {
     // Touch screens fire mouseenter on tap but never mouseleave: the tooltip
     // would stay stuck over the header, so phones don't get it.
     if (Platform.OS !== "web" || isNarrow) return
     const rect = e?.currentTarget?.getBoundingClientRect?.()
-    if (rect) setTooltip({ label, y: rect.top + rect.height / 2 })
+    if (rect) setTooltip({ label, sub, y: rect.top + rect.height / 2 })
   }
   const hideTooltip = () => setTooltip(null)
 
@@ -394,6 +400,9 @@ export default function ChatScreen() {
   // resumen ya vaciado.
   const [demoCleared, setDemoCleared] = useState(false)
   const markingAllRef = useRef(false)
+  const [mutes, setMutes] = useState<MuteState>(EMPTY_MUTES)
+  const mutingRef = useRef(0)
+  const reloadUnreadRef = useRef<(() => void) | null>(null)
 
   // Add-server modal (HU-1 create / HU-3 join)
   const [addModalOpen, setAddModalOpen] = useState(false)
@@ -563,6 +572,11 @@ export default function ChatScreen() {
   const [pendingTransfer, setPendingTransfer] = useState<OwnershipTransfer | null>(null)
   const [transferActionBusy, setTransferActionBusy] = useState(false)
   const [bannerError, setBannerError] = useState("")
+  useEffect(() => {
+    if (!bannerError) return
+    const timer = setTimeout(() => setBannerError(""), 8000)
+    return () => clearTimeout(timer)
+  }, [bannerError])
 
   // Moderation (HU-25 ban / HU-26 revoke). The caller's permissions in the
   // active server decide which controls show up; the backend checks again.
@@ -837,21 +851,34 @@ export default function ChatScreen() {
   useEffect(() => {
     if (!realServerIds) {
       setUnread(EMPTY_UNREAD)
+      setMutes(EMPTY_MUTES)
       return
     }
     let active = true
-    const load = () =>
-      getUnreadSummary(realServerIds.split(","))
+    const loadMutes = () =>
+      getMutes(realServerIds.split(","))
+        .then((state) => {
+          if (active && mutingRef.current === 0) setMutes(state)
+        })
+        .catch(() => undefined)
+    const load = () => {
+      loadMutes()
+      return getUnreadSummary(realServerIds.split(","))
         .then((summary) => {
           if (!active || markingAllRef.current) return
           const channel = viewedRef.current
           setUnread(channel ? withoutChannel(summary, channel) : summary)
         })
         .catch(() => undefined)
+    }
+    reloadUnreadRef.current = () => {
+      load()
+    }
     load()
     const timer = setInterval(load, UNREAD_REFRESH_MS)
     return () => {
       active = false
+      reloadUnreadRef.current = null
       clearInterval(timer)
     }
   }, [realServerIds])
@@ -872,13 +899,23 @@ export default function ChatScreen() {
   // ejemplo los valores de demostración que ya traía.
   const channelUnread = (ch: { id: string; unread?: boolean; mention?: number }) => {
     const u = unread.channels[ch.id]
-    if (demoCleared) return { unread: !!u, mentions: u ? u.mentions : 0 }
-    return { unread: !!u || !!ch.unread, mentions: u ? u.mentions : (ch.mention ?? 0) }
+    const muted = !!mutes.channels[ch.id] || !!mutes.servers[activeServer]
+    if (demoCleared) return { unread: !!u, mentions: u && !muted ? u.mentions : 0, muted }
+    return {
+      unread: !!u || !!ch.unread,
+      mentions: muted ? 0 : u ? u.mentions : (ch.mention ?? 0),
+      muted,
+    }
   }
   const serverUnread = (s: Server) => {
     const u = unread.servers[s.id]
-    if (demoCleared) return { unread: !!u, mentions: u ? u.mentions : 0 }
-    return { unread: !!u || !!s.unread || !!s.mention, mentions: u ? u.mentions : (s.mention ?? 0) }
+    const muted = !!mutes.servers[s.id] || !!u?.muted
+    if (demoCleared) return { unread: !!u, mentions: u && !muted ? u.mentions : 0, muted }
+    return {
+      unread: !!u || !!s.unread || !!s.mention,
+      mentions: muted ? 0 : u ? u.mentions : (s.mention ?? 0),
+      muted,
+    }
   }
   const hasAnyUnread = servers.some((s) => serverUnread(s).unread)
 
@@ -944,6 +981,22 @@ export default function ChatScreen() {
       setUnread(previous)
       setBannerError(friendlyError(err))
     })
+  }
+
+  const handleToggleMute = (kind: "server" | "channel", id: string, muted: boolean) => {
+    closeServerMenu()
+    setMutes((prev) => withMute(prev, kind, id, muted))
+    mutingRef.current += 1
+    const request = kind === "server" ? setServerMuted(id, muted) : setChannelMuted(id, muted)
+    request
+      .then(() => reloadUnreadRef.current?.())
+      .catch((err) => {
+        setMutes((prev) => withMute(prev, kind, id, !muted))
+        setBannerError(friendlyError(err))
+      })
+      .finally(() => {
+        mutingRef.current -= 1
+      })
   }
 
   // HU-4/HU-5 gating: load the current user's admin permissions for the active
@@ -2534,7 +2587,7 @@ export default function ChatScreen() {
             <View
               key={s.id}
               {...(Platform.OS === "web"
-                ? { onMouseEnter: showTooltip(s.name), onMouseLeave: hideTooltip }
+                ? { onMouseEnter: showTooltip(s.name, serverUnread(s).muted ? "Silenciado" : undefined), onMouseLeave: hideTooltip }
                 : {})}
             >
               {activeServer === s.id && (
@@ -2576,8 +2629,10 @@ export default function ChatScreen() {
                   serverUnread(s).mentions > 0
                     ? `${s.name}, ${serverUnread(s).mentions} menciones sin leer`
                     : serverUnread(s).unread
-                      ? `${s.name}, mensajes sin leer`
-                      : s.name
+                      ? `${s.name}, mensajes sin leer${serverUnread(s).muted ? ", silenciado" : ""}`
+                      : serverUnread(s).muted
+                        ? `${s.name}, silenciado`
+                        : s.name
                 }
                 pressedScale={0.88}
                 hoverStyle={{ borderColor: "rgba(55,214,192,0.55)" }}
@@ -2594,6 +2649,7 @@ export default function ChatScreen() {
                       : "rgba(255,255,255,0.10)",
                   borderWidth: 1,
                   borderColor: activeServer === s.id ? "#37D6C0" : "rgba(255,255,255,0.13)",
+                  opacity: serverUnread(s).muted && activeServer !== s.id ? 0.55 : 1,
                 }}
               >
                 {s.iconUrl ? (
@@ -2624,7 +2680,7 @@ export default function ChatScreen() {
                       width: 12,
                       height: 12,
                       borderRadius: 6,
-                      backgroundColor: "#FFFFFF",
+                      backgroundColor: serverUnread(s).muted ? "#8DA8AC" : "#FFFFFF",
                       borderWidth: 2,
                       borderColor: "#37D6C0",
                     }}
@@ -2724,7 +2780,7 @@ export default function ChatScreen() {
               style={{
                 position: "absolute",
                 left: Math.max(8, Math.min(serverMenu.x, windowWidth - Math.max(serverMenu.w, 220) - 8)),
-                top: Math.max(8, Math.min(serverMenu.y, windowHeight - 180)),
+                top: Math.max(8, Math.min(serverMenu.y, windowHeight - 240)),
                 width: Math.max(serverMenu.w, 220),
                 paddingVertical: 6,
                 borderRadius: 10,
@@ -2736,6 +2792,7 @@ export default function ChatScreen() {
               {(() => {
                 const isChannel = serverMenu.kind === "channel"
                 const hasUnreadHere = isChannel ? !!unread.channels[serverMenu.id] : !!unread.servers[serverMenu.id]
+                const isMuted = isChannel ? !!mutes.channels[serverMenu.id] : !!mutes.servers[serverMenu.id]
                 const item = (
                   label: string,
                   icon: React.ComponentProps<typeof Ionicons>["name"],
@@ -2770,6 +2827,17 @@ export default function ChatScreen() {
                       "checkmark-done-outline",
                       () => (isChannel ? handleMarkChannelRead(serverMenu.id) : handleMarkServerRead(serverMenu.id)),
                       { disabled: !hasUnreadHere },
+                    )}
+                    {item(
+                      isMuted
+                        ? isChannel
+                          ? "Reactivar notificaciones del canal"
+                          : "Reactivar notificaciones del servidor"
+                        : isChannel
+                          ? "Silenciar canal"
+                          : "Silenciar servidor",
+                      isMuted ? "notifications-outline" : "notifications-off-outline",
+                      () => handleToggleMute(serverMenu.kind, serverMenu.id, !isMuted),
                     )}
                     {serverMenu.full && !activeSuspended && canCreateInvite
                       ? item("Invitar al servidor", "person-add-outline", () => {
@@ -2820,6 +2888,11 @@ export default function ChatScreen() {
           <Text style={{ color: "#E6F3F3", fontSize: 12, fontWeight: "700" }} numberOfLines={1}>
             {tooltip.label}
           </Text>
+          {tooltip.sub ? (
+            <Text style={{ color: "#8DA8AC", fontSize: 11, marginTop: 2 }} numberOfLines={1}>
+              {tooltip.sub}
+            </Text>
+          ) : null}
         </View>
       ) : null}
 
@@ -2882,6 +2955,9 @@ export default function ChatScreen() {
               <Text style={{ flex: 1, color: "#E6F3F3", fontWeight: "700", fontSize: 14 }} numberOfLines={2}>
                 {activeServerName}
               </Text>
+              {mutes.servers[activeServer] ? (
+                <Ionicons name="notifications-off-outline" size={13} color="#5E7E82" />
+              ) : null}
               <Ionicons name="chevron-down" size={14} color="#8DA8AC" />
             </View>
           </PressableScale>
@@ -3084,7 +3160,7 @@ export default function ChatScreen() {
               </View>
               {cat.channels.map((ch) => {
                 const active = activeChannel === ch.id
-                const cu = ch.type === "text" ? channelUnread(ch) : { unread: false, mentions: 0 }
+                const cu = ch.type === "text" ? channelUnread(ch) : { unread: false, mentions: 0, muted: false }
                 const inCall = ch.type === "voice" && voice.channel?.id === ch.id && voice.status !== "idle"
                 const roster = voiceRosterFor(ch.id)
                 return (
@@ -3106,7 +3182,7 @@ export default function ChatScreen() {
                               : cu.unread
                                 ? ", mensajes sin leer"
                                 : ""
-                          }`
+                          }${cu.muted ? ", silenciado" : ""}`
                     }
                     pressedScale={1}
                     hoverStyle={active ? undefined : { backgroundColor: "rgba(255,255,255,0.05)" }}
@@ -3135,13 +3211,22 @@ export default function ChatScreen() {
                       style={{
                         flex: 1,
                         fontSize: 12,
-                        color: inCall ? "#4FD69C" : active || cu.unread ? "#E6F3F3" : "#8DA8AC",
-                        fontWeight: inCall || active || cu.unread ? "700" : "400",
+                        color: inCall
+                          ? "#4FD69C"
+                          : active || (cu.unread && !cu.muted)
+                            ? "#E6F3F3"
+                            : cu.muted
+                              ? "#5E7E82"
+                              : "#8DA8AC",
+                        fontWeight: inCall || active || (cu.unread && !cu.muted) ? "700" : "400",
                       }}
                       numberOfLines={1}
                     >
                       {ch.name}
                     </Text>
+                    {cu.muted ? (
+                      <Ionicons name="notifications-off-outline" size={11} color="#5E7E82" />
+                    ) : null}
                     {canManageChannels && active ? (
                       <View style={{ flexDirection: "row", gap: 2 }}>
                         <PressableScale
@@ -3190,7 +3275,12 @@ export default function ChatScreen() {
                       // CA1: actividad sin leer en el canal.
                       <View
                         accessibilityLabel="Mensajes sin leer"
-                        style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: "#E6F3F3" }}
+                        style={{
+                          width: cu.muted ? 6 : 8,
+                          height: cu.muted ? 6 : 8,
+                          borderRadius: 4,
+                          backgroundColor: cu.muted ? "#5E7E82" : "#E6F3F3",
+                        }}
                       />
                     ) : null}
                   </PressableScale>
@@ -3411,6 +3501,29 @@ export default function ChatScreen() {
             <Text style={{ flex: 1, color: "#E6F3F3", fontSize: 12.5, fontWeight: "600" }}>
               Transferencia enviada. Queda pendiente de que la persona destinataria la acepte.
             </Text>
+          </View>
+        ) : null}
+
+        {bannerError && !isTransferRecipient ? (
+          <View
+            style={{
+              ...NOTICE_ERROR,
+              marginHorizontal: 16,
+              marginTop: 8,
+              marginBottom: 0,
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 8,
+            }}
+          >
+            <Text style={{ flex: 1, color: "#FF9E94", fontSize: 12 }}>{bannerError}</Text>
+            <TouchableOpacity
+              onPress={() => setBannerError("")}
+              accessibilityLabel="Cerrar aviso"
+              hitSlop={8}
+            >
+              <Ionicons name="close" size={14} color="#FF9E94" />
+            </TouchableOpacity>
           </View>
         ) : null}
 
