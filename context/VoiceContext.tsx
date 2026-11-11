@@ -76,6 +76,9 @@ interface VoiceState {
   // HU-19: whether our own mic is transmitting. Every join starts unmuted
   // (HU-17 CA1), also when switching channels.
   micEnabled: boolean
+  // HU-60: false while a moderator has us muted in this server. LiveKit took
+  // the mic away; it comes back on its own when the mute ends.
+  micAllowed: boolean
   // Rejects with a user-facing Spanish message if the mic can't be re-enabled.
   toggleMic: () => Promise<void>
   camEnabled: boolean
@@ -126,6 +129,9 @@ function cameraErrorMessage(err: unknown): string {
   }
   return "No pudimos cambiar el estado de tu cámara. Puede que el canal no tenga video habilitado."
 }
+
+export const MODERATOR_MUTED_MESSAGE =
+  "Un moderador te silenció en este servidor. Vas a poder hablar cuando termine el silencio."
 
 const VoiceContext = createContext<VoiceState | null>(null)
 
@@ -328,9 +334,12 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
   // Two fast clicks would otherwise race two setMicrophoneEnabled calls.
   const micBusyRef = useRef(false)
 
+  const micAllowed = roomParticipants.find((p) => p.isLocal)?.micAllowed ?? true
+
   const toggleMic = useCallback(async () => {
     const handle = handleRef.current
     if (!handle || micBusyRef.current) return
+    if (!micAllowed && !micEnabled) throw new Error(MODERATOR_MUTED_MESSAGE)
     micBusyRef.current = true
     try {
       await handle.setMicEnabled(!micEnabled)
@@ -339,7 +348,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
     } finally {
       micBusyRef.current = false
     }
-  }, [micEnabled])
+  }, [micEnabled, micAllowed])
 
   const camEnabled = roomParticipants.find((p) => p.isLocal)?.camEnabled ?? false
   const cameraBusyRef = useRef(false)
@@ -559,6 +568,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
         join,
         leave,
         micEnabled,
+        micAllowed,
         toggleMic,
         camEnabled,
         cameraError,

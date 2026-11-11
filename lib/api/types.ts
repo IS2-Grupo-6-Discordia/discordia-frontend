@@ -105,6 +105,25 @@ export interface ServerBan {
 export interface MyServerPermissions {
   isOwner: boolean
   permissions: string[]
+  // HU-60: ISO date when a moderator's mute on the caller ends, or null.
+  mutedUntil: string | null
+}
+
+// HU-60: whether `mutedUntil` is still in the future at `now`.
+export function isMutedAt(mutedUntil: string | null | undefined, now: number = Date.now()): boolean {
+  if (!mutedUntil) return false
+  const end = Date.parse(mutedUntil)
+  return Number.isFinite(end) && end > now
+}
+
+// HU-60: the end of a mute as the user reads it, e.g. "21:10" today or
+// "12/11 21:10" another day.
+export function formatMuteEnd(mutedUntil: string, now: Date = new Date()): string {
+  const end = new Date(mutedUntil)
+  const time = end.toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" })
+  if (end.toDateString() === now.toDateString()) return time
+  const day = end.toLocaleDateString("es-AR", { day: "2-digit", month: "2-digit" })
+  return `${day} ${time}`
 }
 
 export function hasServerPermission(perms: MyServerPermissions | null, name: string): boolean {
