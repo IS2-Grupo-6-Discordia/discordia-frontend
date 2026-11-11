@@ -24,6 +24,8 @@ import {
   getServerMembers,
   getMessages,
   sendMessage,
+  editMessage,
+  deleteMessage,
   createServer,
   createInvite,
   listInvites,
@@ -564,6 +566,18 @@ export default function ChatScreen() {
   // caso NO se deshabilita el campo: el POST igual se valida en el backend.
   const [canSend, setCanSend] = useState<boolean | null>(null)
   const [canMention, setCanMention] = useState<boolean | null>(null)
+  // HU-5: ¿puede borrar mensajes ajenos en el canal abierto? (manage_messages)
+  const [canManageMessages, setCanManageMessages] = useState(false)
+  // HU-4: edición en línea de un mensaje propio.
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null)
+  const [editDraft, setEditDraft] = useState("")
+  const [editBusy, setEditBusy] = useState(false)
+  const [editError, setEditError] = useState<string | null>(null)
+  // HU-5: confirmación de borrado y menú de acciones (long press en mobile).
+  const [deleteTarget, setDeleteTarget] = useState<Message | null>(null)
+  const [deleteBusy, setDeleteBusy] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
+  const [messageActionsTarget, setMessageActionsTarget] = useState<Message | null>(null)
   const [mentionRoles, setMentionRoles] = useState<MentionRole[]>([])
   const [suggestionIndex, setSuggestionIndex] = useState(0)
   const messagesListRef = useRef<FlatList<Message>>(null)
@@ -795,10 +809,47 @@ export default function ChatScreen() {
         const tb = b.createdAt ? Date.parse(b.createdAt) : 0
         return ta - tb
       })
-      const same = merged.length === prev.length && merged.every((m, i) => m.id === prev[i]?.id)
+      // An edit keeps the id, so the content and the "(editado)" mark are compared too.
+      const same =
+        merged.length === prev.length &&
+        merged.every(
+          (m, i) => m.id === prev[i]?.id && m.text === prev[i]?.text && !!m.edited === !!prev[i]?.edited,
+        )
       return same ? prev : merged
     })
   }, [])
+
+  // HU-5: a deleted message disappears for everyone (messages.deleted frame or own delete).
+  const removeMessages = useCallback((ids: string[]) => {
+    if (ids.length === 0) return
+    const gone = new Set(ids)
+    setMessages((prev) => (prev.some((m) => gone.has(m.id)) ? prev.filter((m) => !gone.has(m.id)) : prev))
+  }, [])
+
+  // The latest page (60 s reconcile / fallback poll) is authoritative for its
+  // time window: a loaded message inside it that the backend no longer returns
+  // was deleted while its messages.deleted frame was missed. Messages I just
+  // sent (sentIds) are kept, a page fetched before the POST may not have them.
+  const syncLatestPage = useCallback(
+    (batch: Message[], isWholeHistory: boolean) => {
+      const present = new Set(batch.map((m) => m.id))
+      const from = isWholeHistory
+        ? -Infinity
+        : Math.min(...batch.map((m) => (m.createdAt ? Date.parse(m.createdAt) : Infinity)))
+      const stale = messagesRef.current
+        .filter(
+          (m) =>
+            m.createdAt &&
+            Date.parse(m.createdAt) >= from &&
+            !present.has(m.id) &&
+            !sentIds.current.has(m.id),
+        )
+        .map((m) => m.id)
+      removeMessages(stale)
+      mergeMessages(batch)
+    },
+    [mergeMessages, removeMessages],
+  )
 
   // HU-6 CA1: fetch the page immediately older than the oldest loaded message and
   // merge it in. mergeMessages is union-by-id, so live/reconciled/recovered
@@ -1272,6 +1323,97 @@ export default function ChatScreen() {
       content: msg.text,
     })
   }
+  // HU-4/HU-5: solo mensajes reales (canal UUID) y con autor conocido.
+  const isRealMessage = (msg: Message) =>
+    isRealServerId(activeServer) && UUID_RE.test(activeChannel) && !!msg.authorId && !msg.system
+  const canEditMessage = (msg: Message) => isRealMessage(msg) && msg.authorId === user?.id && canSend !== false
+  const canDeleteMessage = (msg: Message) =>
+    isRealMessage(msg) && (msg.authorId === user?.id || canManageMessages)
+
+  const startEditMessage = (msg: Message) => {
+    setMessageActionsTarget(null)
+    setEditingMessageId(msg.id)
+    setEditDraft(msg.text)
+    setEditError(null)
+  }
+  const cancelEditMessage = () => {
+    setEditingMessageId(null)
+    setEditDraft("")
+    setEditError(null)
+  }
+  const saveEditMessage = async () => {
+    const id = editingMessageId
+    const channelId = activeChannel
+    if (!id || editBusy) return
+    const text = editDraft.trim()
+    const original = messagesRef.current.find((m) => m.id === id)
+    if (!text) {
+      setEditError("El mensaje no puede quedar vacío. Para sacarlo, eliminalo.")
+      return
+    }
+    if (text.length > MESSAGE_MAX) {
+      setEditError(`Máximo ${MESSAGE_MAX} caracteres`)
+      return
+    }
+    if (original && original.text === text) {
+      cancelEditMessage()
+      return
+    }
+    setEditBusy(true)
+    setEditError(null)
+    try {
+      const updated = await editMessage(channelId, id, text)
+      if (activeChannelRef.current === channelId) mergeMessages([updated])
+      cancelEditMessage()
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) {
+        removeMessages([id])
+        cancelEditMessage()
+        setBannerError("Ese mensaje ya no existe.")
+      } else {
+        setEditError(friendlyError(err))
+      }
+    } finally {
+      setEditBusy(false)
+    }
+  }
+
+  // Cambiar de canal descarta una edición a medio hacer.
+  useEffect(() => {
+    setEditingMessageId(null)
+    setEditDraft("")
+    setEditError(null)
+    setMessageActionsTarget(null)
+  }, [activeChannel])
+
+  const askDeleteMessage = (msg: Message) => {
+    setMessageActionsTarget(null)
+    setDeleteError(null)
+    setDeleteTarget(msg)
+  }
+  const confirmDeleteMessage = async () => {
+    const msg = deleteTarget
+    const channelId = activeChannel
+    if (!msg || deleteBusy) return
+    setDeleteBusy(true)
+    setDeleteError(null)
+    try {
+      await deleteMessage(channelId, msg.id)
+      removeMessages([msg.id])
+      if (editingMessageId === msg.id) cancelEditMessage()
+      setDeleteTarget(null)
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) {
+        removeMessages([msg.id])
+        setDeleteTarget(null)
+      } else {
+        setDeleteError(friendlyError(err))
+      }
+    } finally {
+      setDeleteBusy(false)
+    }
+  }
+
   const canReportMessage = (msg: Message) =>
     isRealServerId(activeServer) && isRealServerId(activeChannel) && !!msg.authorId && msg.authorId !== user?.id && !msg.system && !!msg.text.trim()
   const canBanMember = (memberId: string) =>
@@ -2220,6 +2362,8 @@ export default function ChatScreen() {
     channel: realOpenChannel,
     enabled: !!user && !!process.env.EXPO_PUBLIC_API_URL,
     onMessages: mergeMessages,
+    onMessagesDeleted: removeMessages,
+    onLatestPage: syncLatestPage,
     onServerSuspended: (serverId) => setServerSuspended(serverId, true),
     getKnownMessageIds: () => messagesRef.current.map((m) => m.id),
   })
@@ -2234,6 +2378,7 @@ export default function ChatScreen() {
       permsChannelRef.current = ""
       setCanSend(null)
       setCanMention(null)
+      setCanManageMessages(false)
       return
     }
     const channelId = activeChannel
@@ -2243,6 +2388,7 @@ export default function ChatScreen() {
       permsChannelRef.current = channelId
       setCanSend(null)
       setCanMention(null)
+      setCanManageMessages(false)
     }
     let active = true
     const fetchPerms = () => {
@@ -2252,6 +2398,7 @@ export default function ChatScreen() {
           if (active && permsChannelRef.current === channelId) {
             setCanSend(perms.canSend)
             setCanMention(perms.canMentionEveryone)
+            setCanManageMessages(perms.canManageMessages)
           }
         })
         .catch((err) => {
@@ -3800,9 +3947,19 @@ export default function ChatScreen() {
               msg.authorId !== user.id &&
               (msg.mentionsEveryone === true || (msg.mentionedUserIds?.includes(user.id) ?? false))
             const showReport = reportable && Platform.OS === "web"
+            const editable = canEditMessage(msg)
+            const deletable = canDeleteMessage(msg)
+            const isEditing = editingMessageId === msg.id
+            const showActions = Platform.OS === "web" && !isEditing && hoveredMessage === msg.id
+            const onLongPressMessage =
+              editable || deletable
+                ? () => setMessageActionsTarget(msg)
+                : reportable
+                  ? () => reportMessage(msg)
+                  : undefined
             const row = (
             <Pressable
-              onLongPress={reportable ? () => reportMessage(msg) : undefined}
+              onLongPress={isEditing ? undefined : onLongPressMessage}
               delayLongPress={350}
               accessibilityActions={reportable ? [{ name: "report", label: "Reportar mensaje" }] : undefined}
               onAccessibilityAction={(e) => {
@@ -3856,18 +4013,114 @@ export default function ChatScreen() {
                   ) : null}
                   <Text style={{ color: "#8DA8AC", fontSize: 10 }}>{msg.time}</Text>
                   {msg.edited ? <Text style={{ color: "#8DA8AC", fontSize: 9.5 }}>(editado)</Text> : null}
+                  {Platform.OS === "web" && !isEditing && (editable || deletable) ? (
+                    <View
+                      style={{
+                        marginLeft: "auto",
+                        flexDirection: "row",
+                        gap: 4,
+                        opacity: showActions ? 1 : 0,
+                      }}
+                    >
+                      {editable ? (
+                        <PressableScale
+                          onPress={() => startEditMessage(msg)}
+                          accessibilityLabel="Editar mensaje"
+                          hoverStyle={{ backgroundColor: "rgba(55,214,192,0.16)" }}
+                          style={{ flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6 }}
+                        >
+                          <Ionicons name="create-outline" size={11} color="#8DE9DC" />
+                          <Text style={{ color: "#8DE9DC", fontSize: 10.5, fontWeight: "700" }}>Editar</Text>
+                        </PressableScale>
+                      ) : null}
+                      {deletable ? (
+                        <PressableScale
+                          onPress={() => askDeleteMessage(msg)}
+                          accessibilityLabel="Eliminar mensaje"
+                          hoverStyle={{ backgroundColor: "rgba(255,127,114,0.18)" }}
+                          style={{ flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6 }}
+                        >
+                          <Ionicons name="trash-outline" size={11} color="#FF9E94" />
+                          <Text style={{ color: "#FF9E94", fontSize: 10.5, fontWeight: "700" }}>Eliminar</Text>
+                        </PressableScale>
+                      ) : null}
+                    </View>
+                  ) : null}
                   {showReport ? (
                     <PressableScale
                       onPress={() => reportMessage(msg)}
                       accessibilityLabel="Reportar mensaje"
                       hoverStyle={{ backgroundColor: "rgba(255,127,114,0.18)" }}
-                      style={{ marginLeft: "auto", flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6, opacity: hoveredMessage === msg.id ? 1 : 0 }}
+                      style={{ marginLeft: editable || deletable ? 0 : "auto", flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6, opacity: hoveredMessage === msg.id ? 1 : 0 }}
                     >
                       <Ionicons name="flag-outline" size={11} color="#FF9E94" />
                       <Text style={{ color: "#FF9E94", fontSize: 10.5, fontWeight: "700" }}>Reportar</Text>
                     </PressableScale>
                   ) : null}
                 </View>
+                {isEditing ? (
+                  <View style={{ marginTop: 4, gap: 6 }}>
+                    <TextInput
+                      value={editDraft}
+                      onChangeText={(t) => {
+                        setEditDraft(t)
+                        if (editError) setEditError(null)
+                      }}
+                      autoFocus
+                      multiline
+                      editable={!editBusy}
+                      maxLength={MESSAGE_MAX + 1}
+                      accessibilityLabel="Editar mensaje"
+                      onKeyPress={(e: any) => {
+                        if (Platform.OS !== "web") return
+                        const key = e?.nativeEvent?.key
+                        if (key === "Escape") cancelEditMessage()
+                        else if (key === "Enter" && !e?.nativeEvent?.shiftKey) {
+                          e.preventDefault?.()
+                          void saveEditMessage()
+                        }
+                      }}
+                      style={{
+                        color: "#E6F3F3",
+                        fontSize: 12.5,
+                        minHeight: 36,
+                        paddingHorizontal: 10,
+                        paddingVertical: 8,
+                        borderRadius: 8,
+                        borderWidth: 1,
+                        borderColor: editError ? "#FF7F72" : "rgba(55,214,192,0.45)",
+                        backgroundColor: "rgba(255,255,255,0.05)",
+                        ...(Platform.OS === "web" ? ({ outlineStyle: "none" } as object) : {}),
+                      }}
+                    />
+                    {editError ? <Text style={{ color: "#FF9E94", fontSize: 11 }}>{editError}</Text> : null}
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                      <PressableScale
+                        onPress={cancelEditMessage}
+                        disabled={editBusy}
+                        accessibilityLabel="Cancelar edición"
+                        style={{ paddingHorizontal: 10, paddingVertical: 5, borderRadius: 6, backgroundColor: "rgba(255,255,255,0.08)" }}
+                      >
+                        <Text style={{ color: "#E6F3F3", fontSize: 11, fontWeight: "700" }}>Cancelar</Text>
+                      </PressableScale>
+                      <PressableScale
+                        onPress={() => void saveEditMessage()}
+                        disabled={editBusy}
+                        accessibilityLabel="Guardar mensaje editado"
+                        style={{ paddingHorizontal: 10, paddingVertical: 5, borderRadius: 6, backgroundColor: "#37D6C0", opacity: editBusy ? 0.6 : 1 }}
+                      >
+                        {editBusy ? (
+                          <ActivityIndicator size="small" color="#0B1822" />
+                        ) : (
+                          <Text style={{ color: "#0B1822", fontSize: 11, fontWeight: "800" }}>Guardar</Text>
+                        )}
+                      </PressableScale>
+                      {Platform.OS === "web" ? (
+                        <Text style={{ color: "#8DA8AC", fontSize: 10 }}>Enter para guardar · Esc para cancelar</Text>
+                      ) : null}
+                    </View>
+                  </View>
+                ) : (
                 <Text style={{ color: "#E6F3F3", marginTop: 2, fontSize: 12.5 }}>
                   {msg.mentionRole ? (
                     <Text style={{ color: "#37D6C0", fontWeight: "700", backgroundColor: "rgba(55,214,192,0.17)" }}>
@@ -3876,6 +4129,7 @@ export default function ChatScreen() {
                   ) : null}
                   {msg.mentionRole ? " " : ""}{msg.text}
                 </Text>
+                )}
                 {msg.reactions ? (
                   <View style={{ flexDirection: "row", gap: 6, marginTop: 6 }}>
                     {msg.reactions.map((r) => (
@@ -4979,6 +5233,95 @@ export default function ChatScreen() {
 
       {/* Delete-server confirmation (HU-6 / #97) */}
       <ReportModal target={reportTarget} onClose={() => setReportTarget(null)} />
+      {/* HU-4/HU-5 en mobile: el long press sobre un mensaje abre sus acciones. */}
+      <ModalShell
+        visible={!!messageActionsTarget}
+        onClose={() => setMessageActionsTarget(null)}
+        title="Acciones del mensaje"
+        maxWidth={360}
+      >
+        <View style={{ gap: 8 }}>
+          {messageActionsTarget && canEditMessage(messageActionsTarget) ? (
+            <PressableScale
+              onPress={() => startEditMessage(messageActionsTarget)}
+              accessibilityLabel="Editar mensaje"
+              style={{ flexDirection: "row", alignItems: "center", gap: 10, padding: 12, borderRadius: 10, backgroundColor: "rgba(255,255,255,0.06)" }}
+            >
+              <Ionicons name="create-outline" size={16} color="#8DE9DC" />
+              <Text style={{ color: "#E6F3F3", fontSize: 13, fontWeight: "700" }}>Editar</Text>
+            </PressableScale>
+          ) : null}
+          {messageActionsTarget && canDeleteMessage(messageActionsTarget) ? (
+            <PressableScale
+              onPress={() => askDeleteMessage(messageActionsTarget)}
+              accessibilityLabel="Eliminar mensaje"
+              style={{ flexDirection: "row", alignItems: "center", gap: 10, padding: 12, borderRadius: 10, backgroundColor: "rgba(255,127,114,0.10)" }}
+            >
+              <Ionicons name="trash-outline" size={16} color="#FF9E94" />
+              <Text style={{ color: "#FF9E94", fontSize: 13, fontWeight: "700" }}>Eliminar</Text>
+            </PressableScale>
+          ) : null}
+          {messageActionsTarget && canReportMessage(messageActionsTarget) ? (
+            <PressableScale
+              onPress={() => {
+                const target = messageActionsTarget
+                setMessageActionsTarget(null)
+                reportMessage(target)
+              }}
+              accessibilityLabel="Reportar mensaje"
+              style={{ flexDirection: "row", alignItems: "center", gap: 10, padding: 12, borderRadius: 10, backgroundColor: "rgba(255,255,255,0.06)" }}
+            >
+              <Ionicons name="flag-outline" size={16} color="#FF9E94" />
+              <Text style={{ color: "#E6F3F3", fontSize: 13, fontWeight: "700" }}>Reportar</Text>
+            </PressableScale>
+          ) : null}
+        </View>
+      </ModalShell>
+      <ModalShell
+        visible={!!deleteTarget}
+        onClose={() => {
+          if (!deleteBusy) setDeleteTarget(null)
+        }}
+        title="Eliminar mensaje"
+        subtitle={
+          deleteTarget && deleteTarget.authorId !== user?.id
+            ? `Vas a eliminar un mensaje de ${deleteTarget.author}. Deja de verse para todos.`
+            : "El mensaje deja de verse para todos. No se puede deshacer."
+        }
+        maxWidth={420}
+      >
+        {deleteTarget ? (
+          <View style={{ padding: 10, borderRadius: 8, backgroundColor: "rgba(255,255,255,0.05)", marginBottom: 12 }}>
+            <Text style={{ color: "#8DA8AC", fontSize: 11, fontWeight: "700", marginBottom: 2 }}>{deleteTarget.author}</Text>
+            <Text style={{ color: "#E6F3F3", fontSize: 12.5 }} numberOfLines={4}>
+              {deleteTarget.text}
+            </Text>
+          </View>
+        ) : null}
+        {deleteError ? <Text style={{ color: "#FF9E94", fontSize: 12, marginBottom: 10 }}>{deleteError}</Text> : null}
+        <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 8 }}>
+          <PressableScale
+            onPress={() => setDeleteTarget(null)}
+            disabled={deleteBusy}
+            accessibilityLabel="Cancelar"
+            style={{ paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8, backgroundColor: "rgba(255,255,255,0.08)" }}
+          >
+            <Text style={{ color: "#E6F3F3", fontSize: 12.5, fontWeight: "700" }}>Cancelar</Text>
+          </PressableScale>
+          <PressableScale
+            onPress={() => void confirmDeleteMessage()}
+            disabled={deleteBusy}
+            accessibilityLabel="Confirmar eliminación"
+            style={{ paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8, backgroundColor: "#FF7F72", opacity: deleteBusy ? 0.6 : 1 }}
+          >
+            {deleteBusy ? (
+              <ActivityIndicator size="small" color="#0B1822" />
+            ) : (
+              <Text style={{ color: "#0B1822", fontSize: 12.5, fontWeight: "800" }}>Eliminar</Text>
+            )}
+          </PressableScale>
+        </View>
+      </ModalShell>
       <ServerReportsModal
         visible={serverReportsOpen}
         serverId={activeServer}

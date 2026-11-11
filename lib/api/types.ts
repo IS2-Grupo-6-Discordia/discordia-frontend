@@ -116,6 +116,8 @@ export interface MyChannelPermissions {
   permissions: string[]
   canSend: boolean
   canMentionEveryone: boolean
+  // HU-5 de mensajería: puede eliminar mensajes de otros miembros en este canal.
+  canManageMessages: boolean
 }
 
 export type TransferStatus = "pending" | "accepted" | "rejected" | "cancelled"
