@@ -1,5 +1,5 @@
 import { ApiError } from "@/lib/api/client"
-import { newRequestId, newTraceparent } from "@/lib/api/trace"
+import { newRequestId } from "@/lib/api/trace"
 
 // Generic client for the services' realtime WebSockets (ADR 0006, contract in
 // documentacion/tiempo-real.md). KrakenD CE can't proxy WebSockets, so the
@@ -103,7 +103,7 @@ export class RealtimeConnection {
     if (this.stopped) return
 
     const separator = ticket.url.includes("?") ? "&" : "?"
-    const ws = new WebSocket(`${ticket.url}${separator}ticket=${encodeURIComponent(ticket.ticket)}&traceparent=${newTraceparent()}`)
+    const ws = new WebSocket(`${ticket.url}${separator}ticket=${encodeURIComponent(ticket.ticket)}`)
     this.ws = ws
 
     ws.onopen = () => {
