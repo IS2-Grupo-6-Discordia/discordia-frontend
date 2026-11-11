@@ -31,6 +31,8 @@ export const MANAGE_ROLES_PERMISSION = "manage_roles"
 // whether to show the "Invitar" action.
 export const CREATE_INVITE_PERMISSION = "create_invite"
 
+export const MENTION_EVERYONE_PERMISSION = "mention_everyone"
+
 // The backend's "manage channels" permission string. A member who holds it (or
 // ADMINISTRATOR, or being the owner) may manage channels and categories.
 export const MANAGE_CHANNELS_PERMISSION = "manage_channels"
@@ -1080,13 +1082,21 @@ export async function getMyChannelPermissions(
 ): Promise<MyChannelPermissions> {
   if (WRITE_USE_MOCK) {
     await mockDelay(300)
-    return { isOwner: true, permissions: [], canSend: true }
+    return { isOwner: true, permissions: [], canSend: true, canMentionEveryone: true }
   }
 
   const res = await api<BackendMyChannelPermissions>(
     `/servers/${serverId}/channels/${channelId}/members/me/permissions`,
   )
-  return { isOwner: res.is_owner, permissions: res.permissions, canSend: res.can_send }
+  return {
+    isOwner: res.is_owner,
+    permissions: res.permissions,
+    canSend: res.can_send,
+    canMentionEveryone:
+      res.is_owner ||
+      res.permissions.includes(ADMIN_PERMISSION) ||
+      res.permissions.includes(MENTION_EVERYONE_PERMISSION),
+  }
 }
 
 // HU-25: ban a user. Banning someone already banned is idempotent (200 with the

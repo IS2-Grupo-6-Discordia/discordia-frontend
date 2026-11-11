@@ -16,6 +16,8 @@ export interface BackendMessage {
   author_id: string
   content: string
   mentions: string[]
+  role_mentions?: string[]
+  mention_everyone?: boolean
   created_at: string
 }
 
@@ -39,6 +41,8 @@ export function toMessage(msg: BackendMessage, authorName: string): Message {
     }),
     createdAt: msg.created_at,
     text: msg.content,
+    mentionedUserIds: msg.mentions ?? [],
+    mentionsEveryone: msg.mention_everyone === true,
   }
 }
 
@@ -199,6 +203,8 @@ export async function getMessagesRealtimeTicket(): Promise<RealtimeTicket> {
 export interface SendMessageOptions {
   serverId?: string
   mentions?: string[]
+  roleMentions?: string[]
+  mentionEveryone?: boolean
 }
 
 export async function sendMessage(
@@ -215,6 +221,8 @@ export async function sendMessage(
         server_id: options.serverId,
         content: text,
         mentions: options.mentions ?? [],
+        role_mentions: options.roleMentions ?? [],
+        mention_everyone: options.mentionEveryone ?? false,
       }),
     })
     return toMessage(res, authorName || "Yo")

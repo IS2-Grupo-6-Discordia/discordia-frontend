@@ -115,6 +115,7 @@ export interface MyChannelPermissions {
   isOwner: boolean
   permissions: string[]
   canSend: boolean
+  canMentionEveryone: boolean
 }
 
 export type TransferStatus = "pending" | "accepted" | "rejected" | "cancelled"
@@ -185,6 +186,10 @@ export interface Message {
   // messages don't carry it.
   createdAt?: string
   text: string
+  // Ids de los usuarios mencionados (incluye a los miembros de un rol mencionado) y si el mensaje
+  // menciona a @everyone. El cliente resalta los mensajes que mencionan al usuario actual.
+  mentionedUserIds?: string[]
+  mentionsEveryone?: boolean
   edited?: boolean
   system?: boolean
   role?: string

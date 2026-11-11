@@ -41,8 +41,17 @@ export async function getUnreadSummary(serverIds: string[]): Promise<UnreadSumma
   return summary
 }
 
-export async function markChannelRead(channelId: string): Promise<void> {
-  await api(`/channels/${channelId}/read`, { method: "POST" })
+export interface ChannelReadMark {
+  previousReadAt: string | null
+  lastReadAt: string | null
+}
+
+export async function markChannelRead(channelId: string): Promise<ChannelReadMark> {
+  const res = await api<{ last_read_at?: string; previous_read_at?: string | null } | undefined>(
+    `/channels/${channelId}/read`,
+    { method: "POST" },
+  )
+  return { previousReadAt: res?.previous_read_at ?? null, lastReadAt: res?.last_read_at ?? null }
 }
 
 export async function markAllRead(serverIds: string[]): Promise<void> {
