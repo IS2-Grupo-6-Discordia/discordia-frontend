@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react"
+import { useState, useEffect, useRef, useCallback, useMemo } from "react"
 import {
   View,
   Text,
@@ -77,8 +77,14 @@ import {
   withMute,
   EMPTY_MUTES,
   extractMentionIds,
+  extractRoleMentionIds,
+  hasEveryoneMention,
+  findMentionQuery,
+  filterMentionSuggestions,
+  applyMentionSuggestion,
   EMPTY_UNREAD,
 } from "@/lib/api"
+import type { MentionSuggestion, MentionRole } from "@/lib/api/mentions"
 import type {
   Server,
   Category,
@@ -289,6 +295,8 @@ const PRESENCE_REFRESH_MS = 15_000
 const UNREAD_REFRESH_MS = 8_000
 // CA4: máximo de caracteres de un mensaje. Único valor compartido; se cuenta por
 // code points sobre el texto trimeado, igual que el backend (MAX_MESSAGE_LENGTH).
+const MAX_ROLE_MENTIONS = 10
+const MENTION_FORBIDDEN_MESSAGE = "No tenés permiso para mencionar a todo el servidor o a roles."
 const MESSAGE_MAX = 4000
 // HU-6 CA1: page size for loading older history, matching useChannelMessages' PAGE_LIMIT.
 const HISTORY_PAGE = 50
@@ -555,6 +563,19 @@ export default function ChatScreen() {
   // (todavía no se consultó, o la consulta falló por algo transitorio). En ese
   // caso NO se deshabilita el campo: el POST igual se valida en el backend.
   const [canSend, setCanSend] = useState<boolean | null>(null)
+  const [canMention, setCanMention] = useState<boolean | null>(null)
+  const [mentionRoles, setMentionRoles] = useState<MentionRole[]>([])
+  const [suggestionIndex, setSuggestionIndex] = useState(0)
+  const messagesListRef = useRef<FlatList<Message>>(null)
+  const nearBottomRef = useRef(true)
+  const forceScrollRef = useRef(true)
+  const listContentHeightRef = useRef(0)
+  const listViewHeightRef = useRef(0)
+  const scrollMessagesToBottom = useCallback((animated = false) => {
+    const offset = Math.max(0, listContentHeightRef.current - listViewHeightRef.current)
+    messagesListRef.current?.scrollToOffset({ offset, animated })
+  }, [])
+  const [suggestionsDismissedFor, setSuggestionsDismissedFor] = useState("")
   // El canal cuya respuesta de permisos vale ahora: descarta respuestas que
   // llegan tarde de un canal anterior y evita deshabilitar el campo equivocado.
   const permsChannelRef = useRef("")
@@ -654,6 +675,25 @@ export default function ChatScreen() {
       .then((members) => setRoles(membersToRoleGroups(members)))
       .catch(() => setRoles([]))
   }, [activeServer, activeSuspended, setServerSuspended])
+
+  useEffect(() => {
+    setMentionRoles([])
+    if (!activeServer || !isRealServerId(activeServer) || activeSuspended) return
+    let active = true
+    const load = () => {
+      getServerRoles(activeServer)
+        .then((list) => {
+          if (active) setMentionRoles(list.map((r) => ({ id: r.id, name: r.name })))
+        })
+        .catch(() => {})
+    }
+    load()
+    const timer = setInterval(load, 60_000)
+    return () => {
+      active = false
+      clearInterval(timer)
+    }
+  }, [activeServer, activeSuspended])
 
   useEffect(() => {
     if (!activeServer || !isRealServerId(activeServer)) return
@@ -883,12 +923,89 @@ export default function ChatScreen() {
     }
   }, [realServerIds])
 
+  useEffect(() => {
+    forceScrollRef.current = true
+    nearBottomRef.current = true
+    const timer = setTimeout(() => {
+      forceScrollRef.current = false
+    }, 1500)
+    return () => clearTimeout(timer)
+  }, [activeChannel])
+
+  const [unreadMark, setUnreadMark] = useState<{ channelId: string; after: number; upTo: number } | null>(null)
+  const unreadMarkOpenedRef = useRef("")
+  const dividerScrolledRef = useRef("")
+  const dividerShownAtRef = useRef(0)
+  const dividerActiveRef = useRef(false)
+
   // Al abrir un canal (y cada vez que llega o se envía un mensaje mientras se mira), queda leído.
   useEffect(() => {
-    if (!viewedChannel) return
+    if (!viewedChannel) {
+      unreadMarkOpenedRef.current = ""
+      setUnreadMark(null)
+      return
+    }
     setUnread((prev) => withoutChannel(prev, viewedChannel))
-    markChannelRead(viewedChannel).catch(() => undefined)
+    const firstMarkOfVisit = unreadMarkOpenedRef.current !== viewedChannel
+    if (firstMarkOfVisit) {
+      unreadMarkOpenedRef.current = viewedChannel
+      dividerScrolledRef.current = ""
+      setUnreadMark(null)
+    }
+    markChannelRead(viewedChannel)
+      .then((mark) => {
+        if (!firstMarkOfVisit || unreadMarkOpenedRef.current !== viewedChannel) return
+        const after = mark.previousReadAt ? Date.parse(mark.previousReadAt) : NaN
+        const upTo = mark.lastReadAt ? Date.parse(mark.lastReadAt) : NaN
+        if (Number.isNaN(after) || Number.isNaN(upTo)) return
+        setUnreadMark({ channelId: viewedChannel, after, upTo })
+      })
+      .catch(() => undefined)
   }, [viewedChannel, messages.length])
+
+  // Dónde va la línea: sobre el primer mensaje de otro que llegó después de la última lectura y
+  // antes de abrir el canal, y cuántos son. Sin mensajes en ese rango no hay línea.
+  const unreadDivider = useMemo(() => {
+    if (!unreadMark || unreadMark.channelId !== viewedChannel) return null
+    let firstId = ""
+    let count = 0
+    for (const m of messages) {
+      if (!m.createdAt || m.authorId === user?.id || m.system) continue
+      const at = Date.parse(m.createdAt)
+      if (at > unreadMark.after && at <= unreadMark.upTo) {
+        if (!firstId) firstId = m.id
+        count += 1
+      }
+    }
+    return firstId ? { messageId: firstId, count } : null
+  }, [unreadMark, viewedChannel, messages, user?.id])
+
+  dividerActiveRef.current = unreadDivider !== null
+
+  useEffect(() => {
+    if (!unreadDivider) return
+    const key = `${viewedChannel}:${unreadDivider.messageId}`
+    if (dividerScrolledRef.current.startsWith(`${viewedChannel}:`)) return
+    const index = messages.findIndex((m) => m.id === unreadDivider.messageId)
+    if (index < 0) return
+    dividerScrolledRef.current = key
+    dividerShownAtRef.current = Date.now()
+    forceScrollRef.current = false
+    nearBottomRef.current = false
+    const go = () => {
+      try {
+        messagesListRef.current?.scrollToIndex({ index, viewPosition: 0.1, animated: false })
+      } catch {
+        // la lista todavía no midió ese mensaje: onScrollToIndexFailed lo reintenta
+      }
+    }
+    go()
+    const timer = setTimeout(go, 250)
+    return () => clearTimeout(timer)
+  }, [unreadDivider, viewedChannel, messages])
+  useEffect(() => {
+    if (!viewedChannel) dividerScrolledRef.current = ""
+  }, [viewedChannel])
 
   // Los mensajes nuevos del canal abierto llegan por el socket de tiempo real
   // (useChannelMessages, más abajo): entrega en vivo, reconciliación cada 60 s y
@@ -1704,9 +1821,19 @@ export default function ChatScreen() {
       setBannerError(`Máximo ${MESSAGE_MAX} caracteres`)
       return
     }
+    // Menciones de rol y @everyone: si ya sabemos que no tiene el permiso no se envía, y se avisa
+    // (CA4); el backend lo valida igual y responde 403 si el permiso cambió.
+    const roleMentionIds = extractRoleMentionIds(text, mentionRoles).slice(0, MAX_ROLE_MENTIONS)
+    const everyone = hasEveryoneMention(text)
+    if (canMention === false && (everyone || roleMentionIds.length > 0)) {
+      setBannerError(MENTION_FORBIDDEN_MESSAGE)
+      return
+    }
     try {
       const msg = await sendMessage(activeChannel, text, user?.name, {
         serverId: activeServer,
+        roleMentions: roleMentionIds,
+        mentionEveryone: everyone,
         // "@nombre" se convierte en el id del miembro: así el backend sabe a quién se mencionó.
         mentions: extractMentionIds(
           text,
@@ -1715,6 +1842,12 @@ export default function ChatScreen() {
         ),
       })
       sentIds.current.add(msg.id)
+      forceScrollRef.current = true
+      nearBottomRef.current = true
+      for (const delay of [0, 60, 200, 500]) setTimeout(() => scrollMessagesToBottom(), delay)
+      setTimeout(() => {
+        forceScrollRef.current = false
+      }, 700)
       // Dedupe by id: the realtime messages.created echo for this same message can land
       // (via mergeMessages) before this awaited POST resolves, so a raw append would show
       // the sender's own message twice. Skip the append when the id is already present.
@@ -1733,6 +1866,16 @@ export default function ChatScreen() {
         setServerSuspended(activeServer, true)
         return
       }
+      if (
+        err instanceof ApiError &&
+        err.status === 403 &&
+        typeof err.detail === "string" &&
+        /mencion/i.test(err.detail)
+      ) {
+        setCanMention(false)
+        setBannerError(MENTION_FORBIDDEN_MESSAGE)
+        return
+      }
       // CA3: perdió el permiso con el canal abierto → deshabilitar sin recargar.
       if (err instanceof ApiError && err.status === 403) {
         setCanSend(false)
@@ -1740,6 +1883,43 @@ export default function ChatScreen() {
         return
       }
       setBannerError(friendlyError(err))
+    }
+  }
+
+  const mentionQuery = sendDisabled || suggestionsDismissedFor === input ? null : findMentionQuery(input)
+  const mentionSuggestions: MentionSuggestion[] = mentionQuery
+    ? filterMentionSuggestions(
+        mentionQuery.query,
+        roles.flatMap((r) => r.members),
+        mentionRoles,
+        canMention !== false,
+        user?.id,
+      )
+    : []
+  const selectedSuggestion = Math.min(suggestionIndex, Math.max(mentionSuggestions.length - 1, 0))
+
+  const applySuggestion = (suggestion: MentionSuggestion) => {
+    if (!mentionQuery) return
+    setInput(applyMentionSuggestion(input, mentionQuery.start, suggestion.label))
+    setSuggestionIndex(0)
+  }
+
+  const handleComposerKeyPress = (e: any) => {
+    if (mentionSuggestions.length === 0) return
+    const key = e?.nativeEvent?.key
+    const stop = () => e?.preventDefault?.()
+    if (key === "ArrowDown") {
+      stop()
+      setSuggestionIndex((selectedSuggestion + 1) % mentionSuggestions.length)
+    } else if (key === "ArrowUp") {
+      stop()
+      setSuggestionIndex((selectedSuggestion - 1 + mentionSuggestions.length) % mentionSuggestions.length)
+    } else if (key === "Tab") {
+      stop()
+      applySuggestion(mentionSuggestions[selectedSuggestion])
+    } else if (key === "Escape") {
+      stop()
+      setSuggestionsDismissedFor(input)
     }
   }
 
@@ -2053,6 +2233,7 @@ export default function ChatScreen() {
     if (!real) {
       permsChannelRef.current = ""
       setCanSend(null)
+      setCanMention(null)
       return
     }
     const channelId = activeChannel
@@ -2061,13 +2242,17 @@ export default function ChatScreen() {
     if (permsChannelRef.current !== channelId) {
       permsChannelRef.current = channelId
       setCanSend(null)
+      setCanMention(null)
     }
     let active = true
     const fetchPerms = () => {
       getMyChannelPermissions(activeServer, channelId)
         .then((perms) => {
           // Puede volver false->true: si recuperó el permiso, se habilita sin recargar.
-          if (active && permsChannelRef.current === channelId) setCanSend(perms.canSend)
+          if (active && permsChannelRef.current === channelId) {
+            setCanSend(perms.canSend)
+            setCanMention(perms.canMentionEveryone)
+          }
         })
         .catch((err) => {
           if (!active || permsChannelRef.current !== channelId) return
@@ -3529,9 +3714,35 @@ export default function ChatScreen() {
 
         {/* Messages */}
         <FlatList
+          ref={messagesListRef}
           data={messages}
+          onScrollToIndexFailed={(info) => {
+            messagesListRef.current?.scrollToOffset({
+              offset: Math.max(0, info.averageItemLength * info.index),
+              animated: false,
+            })
+            setTimeout(() => {
+              messagesListRef.current?.scrollToIndex({ index: info.index, viewPosition: 0.1, animated: false })
+            }, 150)
+          }}
           keyExtractor={(m) => m.id}
           style={{ flex: 1 }}
+          scrollEventThrottle={64}
+          onScroll={(e) => {
+            const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent
+            nearBottomRef.current = contentOffset.y + layoutMeasurement.height >= contentSize.height - 120
+            if (nearBottomRef.current && dividerActiveRef.current && Date.now() - dividerShownAtRef.current > 1500) {
+              dividerActiveRef.current = false
+              setUnreadMark(null)
+            }
+          }}
+          onLayout={(e) => {
+            listViewHeightRef.current = e.nativeEvent.layout.height
+          }}
+          onContentSizeChange={(_w, h) => {
+            listContentHeightRef.current = h
+            if (forceScrollRef.current || nearBottomRef.current) scrollMessagesToBottom()
+          }}
           // HU-6 CA1: keep the reading position when older messages are prepended,
           // so the view does not jump. ListHeaderComponent renders the pager above
           // the oldest message (the list is not inverted: newest is at the bottom).
@@ -3584,8 +3795,12 @@ export default function ChatScreen() {
               ? () => router.push(`/users/${msg.authorId}`)
               : undefined
             const reportable = canReportMessage(msg)
+            const mentionsMe =
+              !!user?.id &&
+              msg.authorId !== user.id &&
+              (msg.mentionsEveryone === true || (msg.mentionedUserIds?.includes(user.id) ?? false))
             const showReport = reportable && Platform.OS === "web"
-            return (
+            const row = (
             <Pressable
               onLongPress={reportable ? () => reportMessage(msg) : undefined}
               delayLongPress={350}
@@ -3605,8 +3820,16 @@ export default function ChatScreen() {
                 borderRadius: 8,
                 marginHorizontal: -6,
                 paddingHorizontal: 6,
-                backgroundColor: Platform.OS === "web" && hoveredMessage === msg.id ? "rgba(255,255,255,0.03)" : "transparent",
+                paddingVertical: mentionsMe ? 4 : 0,
+                borderLeftWidth: mentionsMe ? 3 : 0,
+                borderLeftColor: "#37D6C0",
+                backgroundColor: mentionsMe
+                  ? "rgba(55,214,192,0.12)"
+                  : Platform.OS === "web" && hoveredMessage === msg.id
+                    ? "rgba(255,255,255,0.03)"
+                    : "transparent",
               }}
+              accessibilityHint={mentionsMe ? "Te mencionaron en este mensaje" : undefined}
             >
               <TouchableOpacity
                 onPress={goToAuthor}
@@ -3682,6 +3905,24 @@ export default function ChatScreen() {
               </View>
             </Pressable>
             )
+            if (unreadDivider?.messageId !== msg.id) return row
+            return (
+              <View>
+                {/* Línea "Mensajes no leídos": desde acá hacia abajo, lo que no se había visto. */}
+                <View
+                  accessibilityRole="header"
+                  accessibilityLabel={`${unreadDivider.count} mensaje${unreadDivider.count === 1 ? "" : "s"} no leído${unreadDivider.count === 1 ? "" : "s"}`}
+                  style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 10 }}
+                >
+                  <View style={{ flex: 1, height: 1, backgroundColor: "rgba(255,107,107,0.55)" }} />
+                  <Text style={{ color: "#FF8A80", fontSize: 10.5, fontWeight: "800", letterSpacing: 0.4 }}>
+                    {unreadDivider.count} {unreadDivider.count === 1 ? "MENSAJE NO LEÍDO" : "MENSAJES NO LEÍDOS"}
+                  </Text>
+                  <View style={{ flex: 1, height: 1, backgroundColor: "rgba(255,107,107,0.55)" }} />
+                </View>
+                {row}
+              </View>
+            )
           }}
         />
 
@@ -3693,7 +3934,68 @@ export default function ChatScreen() {
         </View>
 
         {/* Input */}
-        <View style={{ paddingHorizontal: 16, paddingBottom: 12, paddingTop: 8, display: activeSuspended ? "none" : "flex" }}>
+        <View
+          style={{
+            paddingHorizontal: 16,
+            paddingBottom: 12,
+            paddingTop: 8,
+            display: activeSuspended ? "none" : "flex",
+            position: "relative",
+            zIndex: 20,
+          }}
+        >
+          {/* Sugerencias al escribir "@": @everyone, roles y miembros. */}
+          {mentionSuggestions.length > 0 ? (
+            <View
+              accessibilityRole="menu"
+              style={{
+                position: "absolute",
+                left: 16,
+                right: 16,
+                bottom: "100%",
+                marginBottom: -4,
+                maxHeight: 260,
+                borderRadius: 12,
+                borderWidth: 1,
+                borderColor: "rgba(255,255,255,0.13)",
+                backgroundColor: "#0E2A30",
+                paddingVertical: 4,
+                overflow: "hidden",
+                zIndex: 30,
+              }}
+            >
+              {mentionSuggestions.map((sg, i) => (
+                <Pressable
+                  key={`${sg.kind}:${sg.id}`}
+                  onPress={() => applySuggestion(sg)}
+                  accessibilityRole="menuitem"
+                  accessibilityLabel={
+                    sg.kind === "everyone"
+                      ? "Mencionar a todo el servidor"
+                      : sg.kind === "role"
+                        ? `Mencionar al rol ${sg.label}`
+                        : `Mencionar a ${sg.label}`
+                  }
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 8,
+                    paddingHorizontal: 12,
+                    paddingVertical: 7,
+                    backgroundColor: i === selectedSuggestion ? "rgba(55,214,192,0.14)" : "transparent",
+                  }}
+                >
+                  <Text style={{ color: "#37D6C0", fontWeight: "700", fontSize: 12 }}>@</Text>
+                  <Text style={{ color: "#E6F3F3", fontSize: 12, flexShrink: 1 }} numberOfLines={1}>
+                    {sg.label}
+                  </Text>
+                  <Text style={{ color: "#8DA8AC", fontSize: 10.5 }}>
+                    {sg.kind === "everyone" ? "Avisa a todo el canal" : sg.kind === "role" ? "Rol" : ""}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+          ) : null}
           <View
             style={{
               flexDirection: "row",
@@ -3710,7 +4012,11 @@ export default function ChatScreen() {
             <Text style={{ color: "#8DA8AC", opacity: 0.7 }}>＋</Text>
             <TextInput
               value={input}
-              onChangeText={setInput}
+              onChangeText={(value) => {
+                setInput(value)
+                setSuggestionIndex(0)
+              }}
+              onKeyPress={handleComposerKeyPress}
               editable={!sendDisabled}
               placeholder={
                 sendDisabled
@@ -3719,7 +4025,9 @@ export default function ChatScreen() {
               }
               placeholderTextColor="#5E7E82"
               style={{ flex: 1, color: "#E6F3F3", fontSize: 12, opacity: sendDisabled ? 0.5 : 1 }}
-              onSubmitEditing={handleSend}
+              onSubmitEditing={() =>
+                mentionSuggestions.length > 0 ? applySuggestion(mentionSuggestions[selectedSuggestion]) : handleSend()
+              }
               returnKeyType="send"
             />
             <PressableScale
