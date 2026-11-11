@@ -6,7 +6,7 @@ import { useRouter } from "expo-router"
 import PressableScale from "@/components/PressableScale"
 import VoiceStage, { VOICE_LAYOUTS } from "@/components/VoiceStage"
 import type { VoiceLayout } from "@/components/VoiceStage"
-import { useVoice } from "@/context/VoiceContext"
+import { MODERATOR_MUTED_MESSAGE, useVoice } from "@/context/VoiceContext"
 
 // HU-19: a plain mic while transmitting; muted, the same mic crossed by a red
 // diagonal line (drawn over the icon, since Ionicons' mic-off is single-color).
@@ -329,7 +329,12 @@ export default function VoiceScreen() {
         />
       )}
 
-      {micError || voice.cameraError || voice.screenShareError ? (
+      {/* HU-60: muted by a moderator. Kept apart from the errors: it isn't one. */}
+      {!voice.micAllowed ? (
+        <Text style={{ color: "#F5C26B", fontSize: 12, textAlign: "center", paddingHorizontal: 20, paddingBottom: 8 }}>
+          {MODERATOR_MUTED_MESSAGE}
+        </Text>
+      ) : micError || voice.cameraError || voice.screenShareError ? (
         <Text style={{ color: "#FF9E94", fontSize: 12, textAlign: "center", paddingHorizontal: 20, paddingBottom: 8 }}>
           {micError || voice.cameraError || voice.screenShareError}
         </Text>
@@ -348,11 +353,24 @@ export default function VoiceScreen() {
         }}
       >
         {/* HU-19: mute toggle */}
-        <View style={{ alignItems: "center", gap: 7, width: isNarrow ? 66 : 88, opacity: connecting ? 0.5 : 1 }}>
+        <View
+          style={{
+            alignItems: "center",
+            gap: 7,
+            width: isNarrow ? 66 : 88,
+            opacity: connecting || !voice.micAllowed ? 0.5 : 1,
+          }}
+        >
           <PressableScale
             onPress={handleToggleMic}
-            disabled={connecting}
-            accessibilityLabel={voice.micEnabled ? "Silenciar micrófono" : "Activar micrófono"}
+            disabled={connecting || !voice.micAllowed}
+            accessibilityLabel={
+              !voice.micAllowed
+                ? "Micrófono bloqueado por un moderador"
+                : voice.micEnabled
+                  ? "Silenciar micrófono"
+                  : "Activar micrófono"
+            }
             pressedScale={0.9}
             hoverStyle={{ backgroundColor: "rgba(255,255,255,0.16)" }}
             style={{
@@ -369,7 +387,7 @@ export default function VoiceScreen() {
             <MicIcon muted={!voice.micEnabled} size={22} color="#E6F3F3" />
           </PressableScale>
           <Text style={{ color: "#C9DADC", fontWeight: "700", fontSize: 10 }}>
-            {voice.micEnabled ? "Silenciar" : "Activar"}
+            {!voice.micAllowed ? "Silenciado" : voice.micEnabled ? "Silenciar" : "Activar"}
           </Text>
         </View>
 

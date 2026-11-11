@@ -23,6 +23,7 @@ export const PERMISSION_OPTIONS: { key: string; label: string }[] = [
   { key: "connect_voice", label: "Conectarse a voz" },
   { key: "mention_everyone", label: "Mencionar @everyone y roles" },
   { key: "manage_messages", label: "Eliminar mensajes de otros" },
+  { key: "moderate_members", label: "Silenciar miembros" },
 ]
 
 interface RolePermissionsModalProps {

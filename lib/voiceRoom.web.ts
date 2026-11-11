@@ -3,7 +3,7 @@
 // straight to LiveKit. Only this file knows about the SDK.
 import { DisconnectReason, Room, RoomEvent, Track, VideoPresets } from "livekit-client"
 import type { Participant, RemoteTrack } from "livekit-client"
-import { CameraError, MicrophoneError, ScreenShareCancelledError, VoiceAbortedError } from "./voiceRoom.types"
+import { CameraError, MicrophoneError, ScreenShareCancelledError, VoiceAbortedError, micAllowedBy } from "./voiceRoom.types"
 import type { VoiceAudioTrack, VoiceRoomEvents, VoiceRoomHandle, VoiceRoomParticipant, VoiceVideoTrack } from "./voiceRoom.types"
 
 export * from "./voiceRoom.types"
@@ -36,6 +36,7 @@ function snapshot(room: Room): VoiceRoomParticipant[] {
       identity: local.identity,
       isLocal: true,
       micEnabled: local.isMicrophoneEnabled,
+      micAllowed: micAllowedBy(local.permissions),
       camEnabled: local.isCameraEnabled,
       speaking: local.isSpeaking,
       videoTrack: cameraTrack(local),
@@ -48,6 +49,7 @@ function snapshot(room: Room): VoiceRoomParticipant[] {
       identity: p.identity,
       isLocal: false,
       micEnabled: p.isMicrophoneEnabled,
+      micAllowed: micAllowedBy(p.permissions),
       camEnabled: p.isCameraEnabled,
       speaking: p.isSpeaking,
       videoTrack: cameraTrack(p),
@@ -120,6 +122,9 @@ export async function connectVoiceRoom(
     .on(RoomEvent.TrackUnmuted, emit)
     .on(RoomEvent.LocalTrackPublished, emit)
     .on(RoomEvent.LocalTrackUnpublished, emit)
+    // HU-60: a moderator muted us (or the mute ended). LiveKit already took the
+    // mic track down; the snapshot carries the new `micAllowed`.
+    .on(RoomEvent.ParticipantPermissionsChanged, emit)
     .on(RoomEvent.Disconnected, (reason?: DisconnectReason) => {
       releaseCamera()
       releaseAudio()
@@ -162,7 +167,11 @@ export async function connectVoiceRoom(
 
     try {
       // CA1: publishing the mic is what makes "su audio empieza a transmitirse".
-      await room.localParticipant.setMicrophoneEnabled(true)
+      // HU-60: a member muted by a moderator joins to listen. Their token has
+      // no microphone, so publishing it would fail and abort the join.
+      if (micAllowedBy(room.localParticipant.permissions)) {
+        await room.localParticipant.setMicrophoneEnabled(true)
+      }
     } catch (err) {
       await disconnect()
       throw signal?.aborted ? new VoiceAbortedError() : (toMicrophoneError(err) ?? err)

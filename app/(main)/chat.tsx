@@ -67,6 +67,11 @@ import {
   getMyServerPermissions,
   banMember,
   kickMember,
+  muteMember,
+  unmuteMember,
+  listMutes,
+  MODERATE_MEMBERS_PERMISSION,
+  MUTE_DURATIONS,
   listBans,
   unbanMember,
   getUnreadSummary,
@@ -104,7 +109,7 @@ import type {
   UnreadSummary,
   MuteState,
 } from "@/lib/api/types"
-import { hasServerPermission } from "@/lib/api/types"
+import { formatMuteEnd, hasServerPermission, isMutedAt } from "@/lib/api/types"
 import { ApiError, friendlyError } from "@/lib/api/client"
 import { useAuth } from "@/context/AuthContext"
 import { useVoice } from "@/context/VoiceContext"
@@ -622,6 +627,18 @@ export default function ChatScreen() {
   const [kickTarget, setKickTarget] = useState<{ id: string; name: string } | null>(null)
   const [kickBusy, setKickBusy] = useState(false)
   const [kickError, setKickError] = useState("")
+  // HU-60: temporary mutes. `memberMutes` (user id -> ISO end) is only loaded for
+  // moderators, to offer "Levantar silencio" on the muted ones.
+  const [muteTarget, setMuteTarget] = useState<{ id: string; name: string } | null>(null)
+  const [muteSeconds, setMuteSeconds] = useState(MUTE_DURATIONS[2].seconds)
+  const [muteReason, setMuteReason] = useState("")
+  const [muteBusy, setMuteBusy] = useState(false)
+  const [muteError, setMuteError] = useState("")
+  const [memberMutes, setMemberMutes] = useState<Record<string, string>>({})
+  // Our own mute, from members/me/permissions or learnt from a 403 on send.
+  const [myMutedUntil, setMyMutedUntil] = useState<string | null>(null)
+  // Bumped when our mute ends, so the composer re-enables without a reload.
+  const [, setMuteClock] = useState(0)
   const [reportTarget, setReportTarget] = useState<ReportTarget | null>(null)
   const [serverReportsOpen, setServerReportsOpen] = useState(false)
   const [pendingReports, setPendingReports] = useState(0)
@@ -1215,11 +1232,14 @@ export default function ChatScreen() {
   // HU-25/26: what the caller may do here, to show the moderation controls.
   useEffect(() => {
     setMyPerms(null)
+    setMyMutedUntil(null)
     if (!activeServer || !isRealServerId(activeServer)) return
     let active = true
     getMyServerPermissions(activeServer)
       .then((perms) => {
-        if (active) setMyPerms(perms)
+        if (!active) return
+        setMyPerms(perms)
+        setMyMutedUntil(perms.mutedUntil)
       })
       .catch(() => undefined)
     return () => {
@@ -1232,7 +1252,13 @@ export default function ChatScreen() {
   // sabemos que no puede (canSend === false); un permiso desconocido (null, p.ej.
   // una consulta que falló transitoriamente) NO deshabilita. El largo se cuenta
   // por code points sobre el texto trimeado, igual que el backend.
-  const sendDisabled = canSend === false
+  // HU-60: muted by a moderator. Compared with the clock (and re-checked when the
+  // mute ends, see muteClock) so the composer comes back on its own.
+  const mutedByModerator = isMutedAt(myMutedUntil)
+  const sendDisabled = canSend === false || mutedByModerator
+  const sendDisabledMessage = mutedByModerator && myMutedUntil
+    ? `Un moderador te silenció en este servidor hasta ${formatMuteEnd(myMutedUntil)}.`
+    : "No tenés permiso para enviar mensajes en este canal."
   const messageLength = [...input.trim()].length
   const messageTooLong = messageLength > MESSAGE_MAX
 
@@ -1300,7 +1326,8 @@ export default function ChatScreen() {
   // only enforced by the backend, which answers 403 with a clear message.
   const canBan = isRealServerId(activeServer) && hasServerPermission(myPerms, "ban_members")
   const canKick = isRealServerId(activeServer) && hasServerPermission(myPerms, "kick_members")
-  const canModerate = canBan || canKick
+  const canMute = isRealServerId(activeServer) && hasServerPermission(myPerms, MODERATE_MEMBERS_PERMISSION)
+  const canModerate = canBan || canKick || canMute
 
   const refreshPendingReports = useCallback(() => {
     if (!canModerate || !activeServer) return
@@ -1332,7 +1359,7 @@ export default function ChatScreen() {
   // HU-4/HU-5: solo mensajes reales (canal UUID) y con autor conocido.
   const isRealMessage = (msg: Message) =>
     isRealServerId(activeServer) && UUID_RE.test(activeChannel) && !!msg.authorId && !msg.system
-  const canEditMessage = (msg: Message) => isRealMessage(msg) && msg.authorId === user?.id && canSend !== false
+  const canEditMessage = (msg: Message) => isRealMessage(msg) && msg.authorId === user?.id && canSend !== false && !mutedByModerator
   const canDeleteMessage = (msg: Message) =>
     isRealMessage(msg) && (msg.authorId === user?.id || canManageMessages)
 
@@ -1426,6 +1453,7 @@ export default function ChatScreen() {
     memberId !== user?.id && servers.find((s) => s.id === activeServer)?.ownerId !== memberId
   const canBanMember = (memberId: string) => canBan && isModeratableMember(memberId)
   const canKickMember = (memberId: string) => canKick && isModeratableMember(memberId)
+  const canMuteMember = (memberId: string) => canMute && isModeratableMember(memberId)
 
   // Options of a member row's "⋮" menu. Role changes will go here too.
   const memberActions = (memberId: string, memberName: string): MemberAction[] => {
@@ -1445,6 +1473,23 @@ export default function ChatScreen() {
         icon: "swap-horizontal-outline",
         onPress: () => openTransferForMember(memberId, memberName),
       })
+    }
+    if (canMuteMember(memberId)) {
+      if (isMutedAt(memberMutes[memberId])) {
+        actions.push({
+          key: "unmute",
+          label: `Levantar silencio (hasta ${formatMuteEnd(memberMutes[memberId])})`,
+          icon: "volume-high-outline",
+          onPress: () => handleUnmute(memberId),
+        })
+      } else {
+        actions.push({
+          key: "mute",
+          label: "Silenciar",
+          icon: "volume-mute-outline",
+          onPress: () => openMuteModal(memberId, memberName),
+        })
+      }
     }
     if (canKickMember(memberId)) {
       actions.push({
@@ -1973,7 +2018,7 @@ export default function ChatScreen() {
     // CA3: si ya sabemos que no puede enviar, no intentamos (el campo está
     // deshabilitado igual). CA4: bloqueamos un texto que excede el máximo,
     // contando por code points sobre el texto trimeado, igual que el backend.
-    if (canSend === false) return
+    if (sendDisabled) return
     if ([...text].length > MESSAGE_MAX) {
       setBannerError(`Máximo ${MESSAGE_MAX} caracteres`)
       return
@@ -2022,6 +2067,15 @@ export default function ChatScreen() {
       if (err instanceof ApiError && err.status === 423) {
         setServerSuspended(activeServer, true)
         return
+      }
+      // HU-60: muted after we loaded the permissions. The detail ends with the
+      // ISO end of the mute; keep it so the composer shows it in local time.
+      if (err instanceof ApiError && err.status === 403 && typeof err.detail === "string") {
+        const muted = err.detail.match(/^Un moderador te silenció en este servidor hasta (.+)\.$/)
+        if (muted && isMutedAt(muted[1])) {
+          setMyMutedUntil(muted[1])
+          return
+        }
       }
       if (
         err instanceof ApiError &&
@@ -2867,6 +2921,64 @@ export default function ChatScreen() {
     } finally {
       setKickBusy(false)
     }
+  }
+
+  // ---- Moderation: temporary mute (HU-60) -----------------------------------
+
+  const refreshMutes = useCallback(async () => {
+    if (!canMute || !activeServer) {
+      setMemberMutes({})
+      return
+    }
+    try {
+      setMemberMutes(await listMutes(activeServer))
+    } catch {
+      setMemberMutes({})
+    }
+  }, [canMute, activeServer])
+
+  useEffect(() => {
+    refreshMutes()
+  }, [refreshMutes])
+
+  // Our own mute ends on its own (CA2): re-render at that moment so the
+  // composer comes back without a reload.
+  useEffect(() => {
+    if (!myMutedUntil || !isMutedAt(myMutedUntil)) return
+    const wait = Math.min(Date.parse(myMutedUntil) - Date.now() + 500, 2_147_000_000)
+    const timer = setTimeout(() => setMuteClock((n) => n + 1), wait)
+    return () => clearTimeout(timer)
+  }, [myMutedUntil])
+
+  const openMuteModal = (memberId: string, memberName: string) => {
+    setMuteTarget({ id: memberId, name: memberName })
+    setMuteSeconds(MUTE_DURATIONS[2].seconds)
+    setMuteReason("")
+    setMuteError("")
+  }
+
+  const handleMute = async () => {
+    if (!muteTarget) return
+    setMuteBusy(true)
+    setMuteError("")
+    try {
+      await muteMember(activeServer, muteTarget.id, muteSeconds, muteReason)
+      setMuteTarget(null)
+      await refreshMutes()
+    } catch (err) {
+      setMuteError(friendlyError(err))
+    } finally {
+      setMuteBusy(false)
+    }
+  }
+
+  const handleUnmute = async (memberId: string) => {
+    try {
+      await unmuteMember(activeServer, memberId)
+    } catch (err) {
+      setBannerError(friendlyError(err))
+    }
+    await refreshMutes()
   }
 
   const refreshBans = async (serverId: string) => {
@@ -4312,11 +4424,7 @@ export default function ChatScreen() {
               }}
               onKeyPress={handleComposerKeyPress}
               editable={!sendDisabled}
-              placeholder={
-                sendDisabled
-                  ? "No tenés permiso para enviar mensajes en este canal."
-                  : `Escribí en #${channel?.name ?? ""}`
-              }
+              placeholder={sendDisabled ? sendDisabledMessage : `Escribí en #${channel?.name ?? ""}`}
               placeholderTextColor="#5E7E82"
               style={{ flex: 1, color: "#E6F3F3", fontSize: 12, opacity: sendDisabled ? 0.5 : 1 }}
               onSubmitEditing={() =>
@@ -4352,7 +4460,7 @@ export default function ChatScreen() {
             >
               <Text style={{ color: sendDisabled || messageTooLong ? "#FF9B8A" : "#8DA8AC", fontSize: 10.5, flexShrink: 1 }}>
                 {sendDisabled
-                  ? "No tenés permiso para enviar mensajes en este canal."
+                  ? sendDisabledMessage
                   : messageTooLong
                     ? `Máximo ${MESSAGE_MAX} caracteres`
                     : ""}
@@ -5517,6 +5625,97 @@ export default function ChatScreen() {
             <Text style={PRIMARY_TXT}>Transferir</Text>
           )}
         </PressableScale>
+      </ModalShell>
+
+      {/* Temporary mute (HU-60) */}
+      <ModalShell
+        visible={!!muteTarget}
+        onClose={() => setMuteTarget(null)}
+        title="Silenciar miembro"
+        subtitle="No va a poder enviar mensajes ni hablar en los canales de voz del servidor hasta que termine el silencio. Sigue siendo miembro y puede leer y escuchar."
+      >
+        <Text style={{ color: "#8DA8AC", fontSize: 13, lineHeight: 19, marginBottom: 12 }}>
+          ¿Por cuánto tiempo querés silenciar a{" "}
+          <Text style={{ color: "#E6F3F3", fontWeight: "700" }}>{muteTarget?.name ?? ""}</Text>?
+        </Text>
+
+        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6, marginBottom: 14 }}>
+          {MUTE_DURATIONS.map((option) => {
+            const selected = option.seconds === muteSeconds
+            return (
+              <PressableScale
+                key={option.seconds}
+                onPress={() => setMuteSeconds(option.seconds)}
+                disabled={muteBusy}
+                style={{
+                  borderRadius: 9999,
+                  paddingHorizontal: 12,
+                  paddingVertical: 7,
+                  borderWidth: 1,
+                  borderColor: selected ? "#37D6C0" : "rgba(255,255,255,0.12)",
+                  backgroundColor: selected ? "rgba(55,214,192,0.16)" : "rgba(255,255,255,0.04)",
+                }}
+              >
+                <Text style={{ color: selected ? "#E6F3F3" : "#8DA8AC", fontSize: 12.5, fontWeight: "600" }}>
+                  {option.label}
+                </Text>
+              </PressableScale>
+            )
+          })}
+        </View>
+
+        {muteError ? (
+          <View style={NOTICE_ERROR}>
+            <Text style={{ color: "#FF9E94", fontSize: 12.5 }}>{muteError}</Text>
+          </View>
+        ) : null}
+
+        <Text style={LABEL}>Motivo (opcional)</Text>
+        <TextInput
+          value={muteReason}
+          onChangeText={setMuteReason}
+          placeholder="Por ejemplo: spam"
+          placeholderTextColor="#5E7E82"
+          maxLength={500}
+          style={[FIELD, { marginBottom: 18 }]}
+        />
+
+        <View style={{ flexDirection: "row", gap: 8 }}>
+          <PressableScale
+            onPress={() => setMuteTarget(null)}
+            disabled={muteBusy}
+            hoverStyle={{ backgroundColor: "rgba(255,255,255,0.10)" }}
+            style={{
+              flex: 1,
+              borderRadius: 10,
+              paddingVertical: 12,
+              alignItems: "center",
+              borderWidth: 1,
+              borderColor: "rgba(255,255,255,0.10)",
+              backgroundColor: "rgba(255,255,255,0.06)",
+            }}
+          >
+            <Text style={{ color: "#E6F3F3", fontWeight: "700", fontSize: 14 }}>Cancelar</Text>
+          </PressableScale>
+          <PressableScale
+            onPress={handleMute}
+            disabled={muteBusy}
+            style={{
+              flex: 1,
+              borderRadius: 10,
+              paddingVertical: 12,
+              alignItems: "center",
+              backgroundColor: "#F5C26B",
+              opacity: muteBusy ? 0.7 : 1,
+            }}
+          >
+            {muteBusy ? (
+              <ActivityIndicator color="#04211D" />
+            ) : (
+              <Text style={{ fontWeight: "700", fontSize: 14, color: "#04211D" }}>Silenciar</Text>
+            )}
+          </PressableScale>
+        </View>
       </ModalShell>
 
       {/* Kick confirmation (HU-59) */}

@@ -6,6 +6,10 @@ export interface VoiceRoomParticipant {
   identity: string
   isLocal: boolean
   micEnabled: boolean
+  // HU-60: whether LiveKit lets this participant publish the microphone at all.
+  // False while a moderator has them muted in the server; only meaningful for
+  // the local participant.
+  micAllowed: boolean
   camEnabled: boolean
   speaking: boolean
   videoTrack: VoiceVideoTrack | null
@@ -21,6 +25,21 @@ export interface VoiceVideoTrack {
 
 export interface VoiceAudioTrack {
   readonly __voiceAudioTrack?: never
+}
+
+// LiveKit's TrackSource.MICROPHONE (@livekit/protocol). livekit-client doesn't
+// re-export the enum, and it is a wire value that doesn't change.
+const MICROPHONE_SOURCE = 2
+
+// HU-60: reads the participant permissions LiveKit sends. Voz takes the
+// microphone out of them while a moderator has the user muted (token without
+// it at join, or updated live), and gives it back when the mute ends. An empty
+// `canPublishSources` means every source; unknown permissions mean allowed.
+export function micAllowedBy(permissions?: { canPublish?: boolean; canPublishSources?: number[] }): boolean {
+  if (!permissions) return true
+  if (permissions.canPublish === false) return false
+  const sources = permissions.canPublishSources ?? []
+  return sources.length === 0 || sources.includes(MICROPHONE_SOURCE)
 }
 
 // Why the room dropped without the user asking for it.
