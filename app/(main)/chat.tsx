@@ -64,6 +64,7 @@ import {
   CREATE_INVITE_PERMISSION,
   getMyServerPermissions,
   banMember,
+  kickMember,
   listBans,
   unbanMember,
   getUnreadSummary,
@@ -599,10 +600,13 @@ export default function ChatScreen() {
     return () => clearTimeout(timer)
   }, [bannerError])
 
-  // Moderation (HU-25 ban / HU-26 revoke). The caller's permissions in the
+  // Moderation (HU-25 ban / HU-26 revoke / HU-59 kick). The caller's permissions in the
   // active server decide which controls show up; the backend checks again.
   const [myPerms, setMyPerms] = useState<MyServerPermissions | null>(null)
   const [banTarget, setBanTarget] = useState<{ id: string; name: string } | null>(null)
+  const [kickTarget, setKickTarget] = useState<{ id: string; name: string } | null>(null)
+  const [kickBusy, setKickBusy] = useState(false)
+  const [kickError, setKickError] = useState("")
   const [reportTarget, setReportTarget] = useState<ReportTarget | null>(null)
   const [serverReportsOpen, setServerReportsOpen] = useState(false)
   const [pendingReports, setPendingReports] = useState(0)
@@ -614,7 +618,7 @@ export default function ChatScreen() {
   const [bansLoading, setBansLoading] = useState(false)
   const [bansError, setBansError] = useState("")
   const [unbanningId, setUnbanningId] = useState<string | null>(null)
-  // Shown when the user loses access to a server (banned, or it disappeared).
+  // Shown when the user loses access to a server (banned, kicked, or it disappeared).
   const [accessLostNotice, setAccessLostNotice] = useState("")
 
   useEffect(() => {
@@ -1239,11 +1243,12 @@ export default function ChatScreen() {
   const canOfferTransferTo = (memberId: string) =>
     isOwner && isRealServerId(activeServer) && memberId !== user?.id
 
-  // HU-25/26: moderators see "Banear" on other members' rows and the bans list.
-  // Never on yourself or the owner. The role hierarchy (CA2) is only enforced by
-  // the backend, which answers 403 with a clear message.
+  // HU-25/26/59: moderators see "Expulsar" / "Banear" on other members' rows and
+  // the bans list. Never on yourself or the owner. The role hierarchy (CA2) is
+  // only enforced by the backend, which answers 403 with a clear message.
   const canBan = isRealServerId(activeServer) && hasServerPermission(myPerms, "ban_members")
-  const canModerate = canBan || (isRealServerId(activeServer) && hasServerPermission(myPerms, "kick_members"))
+  const canKick = isRealServerId(activeServer) && hasServerPermission(myPerms, "kick_members")
+  const canModerate = canBan || canKick
 
   const refreshPendingReports = useCallback(() => {
     if (!canModerate || !activeServer) return
@@ -1274,10 +1279,10 @@ export default function ChatScreen() {
   }
   const canReportMessage = (msg: Message) =>
     isRealServerId(activeServer) && isRealServerId(activeChannel) && !!msg.authorId && msg.authorId !== user?.id && !msg.system && !!msg.text.trim()
-  const canBanMember = (memberId: string) =>
-    canBan &&
-    memberId !== user?.id &&
-    servers.find((s) => s.id === activeServer)?.ownerId !== memberId
+  const isModeratableMember = (memberId: string) =>
+    memberId !== user?.id && servers.find((s) => s.id === activeServer)?.ownerId !== memberId
+  const canBanMember = (memberId: string) => canBan && isModeratableMember(memberId)
+  const canKickMember = (memberId: string) => canKick && isModeratableMember(memberId)
 
   // Options of a member row's "⋮" menu. Role changes will go here too.
   const memberActions = (memberId: string, memberName: string): MemberAction[] => {
@@ -1296,6 +1301,15 @@ export default function ChatScreen() {
         label: "Transferir propiedad",
         icon: "swap-horizontal-outline",
         onPress: () => openTransferForMember(memberId, memberName),
+      })
+    }
+    if (canKickMember(memberId)) {
+      actions.push({
+        key: "kick",
+        label: "Expulsar",
+        icon: "person-remove-outline",
+        tone: "danger",
+        onPress: () => openKickModal(memberId, memberName),
       })
     }
     if (canBanMember(memberId)) {
@@ -2206,7 +2220,9 @@ export default function ChatScreen() {
     !!user && !!process.env.EXPO_PUBLIC_API_URL,
     (serverId) => {
       const name = servers.find((s) => s.id === serverId)?.name
-      dropServerLocally(serverId, name ? `Fuiste baneado de ${name}.` : "Fuiste baneado de un servidor.")
+      // voice.access_revoked doesn't say why (HU-25 ban or HU-59 kick), so the
+      // notice stays neutral.
+      dropServerLocally(serverId, name ? `Ya no tenés acceso a ${name}.` : "Ya no tenés acceso a un servidor.")
     },
   )
 
@@ -2679,6 +2695,29 @@ export default function ChatScreen() {
       setBanError(friendlyError(err))
     } finally {
       setBanBusy(false)
+    }
+  }
+
+  // ---- Moderation: kick (HU-59) --------------------------------------------
+
+  const openKickModal = (memberId: string, memberName: string) => {
+    setKickTarget({ id: memberId, name: memberName })
+    setKickError("")
+  }
+
+  const handleKick = async () => {
+    if (!kickTarget) return
+    setKickBusy(true)
+    setKickError("")
+    try {
+      await kickMember(activeServer, kickTarget.id)
+      setKickTarget(null)
+      const members = await getServerMembers(activeServer)
+      setRoles(membersToRoleGroups(members))
+    } catch (err) {
+      setKickError(friendlyError(err))
+    } finally {
+      setKickBusy(false)
     }
   }
 
@@ -5135,6 +5174,63 @@ export default function ChatScreen() {
         </PressableScale>
       </ModalShell>
 
+      {/* Kick confirmation (HU-59) */}
+      <ModalShell
+        visible={!!kickTarget}
+        onClose={() => setKickTarget(null)}
+        title="Expulsar miembro"
+        subtitle="Va a perder el acceso al servidor y a sus canales, pero puede volver a unirse con una nueva invitación."
+      >
+        <Text style={{ color: "#8DA8AC", fontSize: 13, lineHeight: 19, marginBottom: 16 }}>
+          ¿Seguro que querés expulsar a{" "}
+          <Text style={{ color: "#E6F3F3", fontWeight: "700" }}>{kickTarget?.name ?? ""}</Text> de{" "}
+          <Text style={{ color: "#E6F3F3", fontWeight: "700" }}>{activeServerName || "este servidor"}</Text>?
+        </Text>
+
+        {kickError ? (
+          <View style={NOTICE_ERROR}>
+            <Text style={{ color: "#FF9E94", fontSize: 12.5 }}>{kickError}</Text>
+          </View>
+        ) : null}
+
+        <View style={{ flexDirection: "row", gap: 8 }}>
+          <PressableScale
+            onPress={() => setKickTarget(null)}
+            disabled={kickBusy}
+            hoverStyle={{ backgroundColor: "rgba(255,255,255,0.10)" }}
+            style={{
+              flex: 1,
+              borderRadius: 10,
+              paddingVertical: 12,
+              alignItems: "center",
+              borderWidth: 1,
+              borderColor: "rgba(255,255,255,0.10)",
+              backgroundColor: "rgba(255,255,255,0.06)",
+            }}
+          >
+            <Text style={{ color: "#E6F3F3", fontWeight: "700", fontSize: 14 }}>Cancelar</Text>
+          </PressableScale>
+          <PressableScale
+            onPress={handleKick}
+            disabled={kickBusy}
+            style={{
+              flex: 1,
+              borderRadius: 10,
+              paddingVertical: 12,
+              alignItems: "center",
+              backgroundColor: "#FF7F72",
+              opacity: kickBusy ? 0.7 : 1,
+            }}
+          >
+            {kickBusy ? (
+              <ActivityIndicator color="#04211D" />
+            ) : (
+              <Text style={{ fontWeight: "700", fontSize: 14, color: "#04211D" }}>Expulsar</Text>
+            )}
+          </PressableScale>
+        </View>
+      </ModalShell>
+
       {/* Ban confirmation (HU-25) */}
       <ModalShell
         visible={!!banTarget}
@@ -5402,7 +5498,7 @@ export default function ChatScreen() {
         </View>
       </ModalShell>
 
-      {/* Lost access to a server (HU-25: banned) */}
+      {/* Lost access to a server (HU-25 banned, HU-59 kicked) */}
       <ModalShell
         visible={!!accessLostNotice}
         onClose={() => setAccessLostNotice("")}

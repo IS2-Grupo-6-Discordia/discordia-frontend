@@ -1153,6 +1153,17 @@ export async function unbanMember(serverId: string, userId: string): Promise<voi
   await api<void>(`/servers/${serverId}/bans/${userId}`, { method: "DELETE" })
 }
 
+// HU-59: kick a member. Unlike a ban, nothing is recorded: they can rejoin with a
+// new invite. Requires KICK_MEMBERS and outranking the target (checked server-side).
+export async function kickMember(serverId: string, userId: string): Promise<void> {
+  if (WRITE_USE_MOCK) {
+    await mockDelay()
+    return
+  }
+
+  await api<void>(`/servers/${serverId}/members/${userId}`, { method: "DELETE" })
+}
+
 // ---- HU-4: categories --------------------------------------------------------
 
 // Create a category in a server. Requires MANAGE_CHANNELS.
