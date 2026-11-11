@@ -9,6 +9,8 @@ export interface User {
   avatar: string
   avatarUrl?: string | null
   bio?: string | null
+  // HU-5 de perfil: texto corto (hasta 64) junto al nombre. null = sin estado.
+  customStatus?: string | null
   status?: UserStatus
   createdAt?: string
   hasPassword?: boolean
@@ -24,6 +26,7 @@ export interface PublicUser {
   id: string
   name: string
   bio?: string | null
+  customStatus?: string | null
   avatarUrl?: string | null
   status: PresenceStatus
 }
@@ -70,6 +73,7 @@ export interface ServerMember {
   avatar: string
   avatarUrl: string | null
   status: PresenceStatus
+  customStatus: string | null
   joinedAt: string
 }
 
@@ -167,6 +171,7 @@ export interface Member {
   avatar: string
   color: string
   status: PresenceStatus
+  customStatus?: string | null
 }
 
 export interface RoleGroup {

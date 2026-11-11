@@ -227,6 +227,7 @@ function membersToRoleGroups(members: ServerMember[]): RoleGroup[] {
     avatar: m.avatar,
     color,
     status: m.status,
+    customStatus: m.customStatus,
   })
   const owners = members.filter((m) => m.role === "owner")
   const rest = members.filter((m) => m.role !== "owner")
@@ -4485,8 +4486,9 @@ export default function ChatScreen() {
                           <Text style={{ color: nameColor, fontWeight: "600", fontSize: 12.5 }} numberOfLines={1}>
                             {m.name}
                           </Text>
+                          {/* HU-5 de perfil: el estado personalizado reemplaza la etiqueta de presencia. */}
                           <Text style={{ color: "#8DA8AC", fontSize: 10 }} numberOfLines={1}>
-                            {STATUS_LABELS[m.status]}
+                            {m.customStatus || STATUS_LABELS[m.status]}
                           </Text>
                         </View>
                         {/* Per-member actions (HU-3 roles, HU-7 transfer, HU-25

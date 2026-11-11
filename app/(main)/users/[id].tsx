@@ -225,6 +225,15 @@ export default function PublicProfileScreen() {
                     <PresenceDot status={profile.status} size={10} ringColor={CARD_BG} />
                     <Text style={{ color: "#8DA8AC", fontSize: 13 }}>{STATUS_LABELS[profile.status]}</Text>
                   </View>
+                  {/* HU-5 de perfil: sin estado personalizado no se muestra nada (CA2). */}
+                  {profile.customStatus ? (
+                    <Text
+                      style={{ color: "#C9DEDF", fontSize: 13, marginTop: 6, textAlign: "center" }}
+                      accessibilityLabel={`Estado: ${profile.customStatus}`}
+                    >
+                      {profile.customStatus}
+                    </Text>
+                  ) : null}
                 </View>
 
                 <View style={{ height: 1, backgroundColor: "rgba(255,255,255,0.08)", marginBottom: 18 }} />
