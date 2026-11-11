@@ -544,6 +544,7 @@ async function toServerMembers(rows: BackendServerMember[]): Promise<ServerMembe
       avatar: abbrFor(name),
       avatarUrl: profile?.avatarUrl ?? null,
       status: profile?.status ?? "offline",
+      customStatus: profile?.customStatus ?? null,
       joinedAt: row.joined_at,
     }
   })

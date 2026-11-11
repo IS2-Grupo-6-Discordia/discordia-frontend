@@ -20,6 +20,7 @@ interface BackendUser {
   name: string
   email: string
   bio?: string | null
+  custom_status?: string | null
   avatar_url?: string | null
   status?: UserStatus
   created_at?: string
@@ -45,6 +46,7 @@ function toUser(backendUser: BackendUser): User {
     name: backendUser.name,
     email: backendUser.email,
     bio: backendUser.bio ?? null,
+    customStatus: backendUser.custom_status ?? null,
     avatar: initials(backendUser.name),
     avatarUrl: backendUser.avatar_url ?? null,
     status: backendUser.status ?? "online",
@@ -62,6 +64,7 @@ interface BackendPublicUser {
   id: string
   name: string
   bio?: string | null
+  custom_status?: string | null
   avatar_url?: string | null
   status?: PresenceStatus
 }
@@ -71,6 +74,7 @@ function toPublicUser(backendUser: BackendPublicUser): PublicUser {
     id: backendUser.id,
     name: backendUser.name,
     bio: backendUser.bio ?? null,
+    customStatus: backendUser.custom_status ?? null,
     avatarUrl: backendUser.avatar_url ?? null,
     status: backendUser.status ?? "offline",
   }
@@ -345,16 +349,26 @@ export async function logout() {
 export async function updateProfile(updates: {
   name?: string
   bio?: string | null
+  // "" o null lo borran (CA3).
+  customStatus?: string | null
   status?: UserStatus
 }): Promise<User> {
+  const { customStatus, ...rest } = updates
   if (USE_MOCK) {
     await mockDelay(600)
-    return { ...MOCK_USER, bio: null, ...updates }
+    return {
+      ...MOCK_USER,
+      bio: null,
+      ...rest,
+      ...(customStatus !== undefined ? { customStatus: customStatus?.trim() || null } : {}),
+    }
   }
 
+  const body: Record<string, unknown> = { ...rest }
+  if (customStatus !== undefined) body.custom_status = customStatus
   const res = await api<BackendUser>("/auth/users/me", {
     method: "PATCH",
-    body: JSON.stringify(updates),
+    body: JSON.stringify(body),
   })
   return toUser(res)
 }
