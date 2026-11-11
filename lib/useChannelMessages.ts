@@ -41,8 +41,14 @@ export interface UseChannelMessagesOptions {
   // channels and "no channel open" open no socket and trigger no fetch).
   channel: OpenChannel | null
   enabled: boolean
-  // Deliver created/refetched messages; the screen merges them by id.
+  // Deliver created/edited/refetched messages; the screen merges them by id.
   onMessages: (msgs: Message[]) => void
+  // A `messages.deleted` frame (HU-5): drop those ids from the open channel.
+  onMessagesDeleted: (ids: string[]) => void
+  // The latest page of the channel, refetched by the 60 s reconcile or the
+  // fallback poll. It is authoritative for its time window, so the screen can
+  // drop messages deleted while a `messages.deleted` frame was missed.
+  onLatestPage: (msgs: Message[], isWholeHistory: boolean) => void
   // A WS `error` frame with code 423: the channel's server is suspended.
   onServerSuspended: (serverId: string) => void
   // The ids the screen already holds, used to stop reconnect paging on overlap.
@@ -53,6 +59,8 @@ export function useChannelMessages({
   channel,
   enabled,
   onMessages,
+  onMessagesDeleted,
+  onLatestPage,
   onServerSuspended,
   getKnownMessageIds,
 }: UseChannelMessagesOptions): { status: RealtimeStatus } {
@@ -65,6 +73,10 @@ export function useChannelMessages({
   channelRef.current = channel
   const onMessagesRef = useRef(onMessages)
   onMessagesRef.current = onMessages
+  const onMessagesDeletedRef = useRef(onMessagesDeleted)
+  onMessagesDeletedRef.current = onMessagesDeleted
+  const onLatestPageRef = useRef(onLatestPage)
+  onLatestPageRef.current = onLatestPage
   const onServerSuspendedRef = useRef(onServerSuspended)
   onServerSuspendedRef.current = onServerSuspended
   const knownIdsRef = useRef(getKnownMessageIds)
@@ -75,6 +87,10 @@ export function useChannelMessages({
 
   const deliver = useCallback((msgs: Message[]) => {
     if (msgs.length > 0) onMessagesRef.current(msgs)
+  }, [])
+
+  const deliverLatest = useCallback((msgs: Message[]) => {
+    onLatestPageRef.current(msgs, msgs.length < PAGE_LIMIT)
   }, [])
 
   // Page back with `before` until we overlap a message the screen already has
@@ -131,7 +147,12 @@ export function useChannelMessages({
       },
       onMessage: (msg: RealtimeMessage) => {
         const ch = channelRef.current
-        if (msg.type === "messages.created") {
+        if (msg.type === "messages.deleted") {
+          if (!ch || msg.channel_id !== ch.id) return
+          if (typeof msg.message_id === "string") onMessagesDeletedRef.current([msg.message_id])
+          return
+        }
+        if (msg.type === "messages.created" || msg.type === "messages.updated") {
           if (!ch || msg.channel_id !== ch.id) return // ignore other channels
           const raw = msg.message as BackendMessage | undefined
           if (!raw || typeof raw.id !== "string") return
@@ -181,7 +202,7 @@ export function useChannelMessages({
     const timer = setInterval(() => {
       getMessages(ch.id, { limit: PAGE_LIMIT })
         .then((msgs) => {
-          if (channelRef.current?.id === ch.id) deliver(msgs)
+          if (channelRef.current?.id === ch.id) deliverLatest(msgs)
         })
         .catch((err) => {
           if (err instanceof ApiError && err.status === ERROR_LOCKED) {
@@ -190,7 +211,7 @@ export function useChannelMessages({
         })
     }, RECONCILE_MS)
     return () => clearInterval(timer)
-  }, [enabled, status, channelId, deliver])
+  }, [enabled, status, channelId, deliverLatest])
 
   // Fallback poll while the socket is NOT open. A 503 (servidores cold-starting
   // behind the gateway) backs the interval off up to 30 s; the first OK resets
@@ -207,7 +228,7 @@ export function useChannelMessages({
         .then((msgs) => {
           if (cancelled) return
           interval = POLL_MIN_MS
-          if (channelRef.current?.id === ch.id) deliver(msgs)
+          if (channelRef.current?.id === ch.id) deliverLatest(msgs)
         })
         .catch((err) => {
           if (cancelled) return
@@ -226,7 +247,7 @@ export function useChannelMessages({
       cancelled = true
       if (timer) clearTimeout(timer)
     }
-  }, [enabled, status, channelId, deliver])
+  }, [enabled, status, channelId, deliverLatest])
 
   return useMemo(() => ({ status }), [status])
 }
