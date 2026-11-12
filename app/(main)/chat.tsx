@@ -1327,7 +1327,8 @@ export default function ChatScreen() {
   const canBan = isRealServerId(activeServer) && hasServerPermission(myPerms, "ban_members")
   const canKick = isRealServerId(activeServer) && hasServerPermission(myPerms, "kick_members")
   const canMute = isRealServerId(activeServer) && hasServerPermission(myPerms, MODERATE_MEMBERS_PERMISSION)
-  const canModerate = canBan || canKick || canMute
+  const canDeleteReportedMessages = isRealServerId(activeServer) && hasServerPermission(myPerms, "manage_messages")
+  const canModerate = canBan || canKick || canMute || canDeleteReportedMessages
 
   const refreshPendingReports = useCallback(() => {
     if (!canModerate || !activeServer) return
@@ -5477,6 +5478,7 @@ export default function ChatScreen() {
         serverName={activeServerName}
         nameOf={(id) => roles.flatMap((r) => r.members).find((m) => m.id === id)?.name ?? null}
         channelNameOf={(id) => categories.flatMap((c) => c.channels).find((c) => c.id === id)?.name ?? null}
+        canDeleteMessages={canDeleteReportedMessages}
         onClose={() => setServerReportsOpen(false)}
         onChanged={refreshPendingReports}
       />
