@@ -1,8 +1,18 @@
 import { api } from "./client"
 
-export type AuditAction = "member_banned" | "member_unbanned" | "report_reviewed" | "report_dismissed" | "server_suspended" | "server_reactivated"
+export type AuditAction =
+  | "member_banned"
+  | "member_unbanned"
+  | "member_kicked"
+  | "member_muted"
+  | "member_unmuted"
+  | "message_deleted"
+  | "report_reviewed"
+  | "report_dismissed"
+  | "server_suspended"
+  | "server_reactivated"
 
-export type AuditGroup = "bans" | "reports" | "staff"
+export type AuditGroup = "bans" | "kicks" | "mutes" | "messages" | "reports" | "staff"
 
 export interface AuditEntry {
   id: string
