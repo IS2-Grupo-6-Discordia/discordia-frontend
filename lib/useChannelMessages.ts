@@ -51,6 +51,9 @@ export interface UseChannelMessagesOptions {
   onLatestPage: (msgs: Message[], isWholeHistory: boolean) => void
   // A WS `error` frame with code 423: the channel's server is suspended.
   onServerSuspended: (serverId: string) => void
+  // A `messages.access_revoked` frame: the user lost access to a server (banned, kicked, or the
+  // server was deleted). Mensajes already dropped its channels from this socket.
+  onAccessRevoked: (serverId: string) => void
   // The ids the screen already holds, used to stop reconnect paging on overlap.
   getKnownMessageIds: () => string[]
 }
@@ -62,6 +65,7 @@ export function useChannelMessages({
   onMessagesDeleted,
   onLatestPage,
   onServerSuspended,
+  onAccessRevoked,
   getKnownMessageIds,
 }: UseChannelMessagesOptions): { status: RealtimeStatus } {
   const [status, setStatus] = useState<RealtimeStatus>("closed")
@@ -79,6 +83,8 @@ export function useChannelMessages({
   onLatestPageRef.current = onLatestPage
   const onServerSuspendedRef = useRef(onServerSuspended)
   onServerSuspendedRef.current = onServerSuspended
+  const onAccessRevokedRef = useRef(onAccessRevoked)
+  onAccessRevokedRef.current = onAccessRevoked
   const knownIdsRef = useRef(getKnownMessageIds)
   knownIdsRef.current = getKnownMessageIds
   const openedOnceRef = useRef(false)
@@ -161,6 +167,10 @@ export function useChannelMessages({
               if (channelRef.current?.id === ch.id) deliver(converted)
             })
             .catch(() => undefined)
+          return
+        }
+        if (msg.type === "messages.access_revoked") {
+          if (typeof msg.server_id === "string") onAccessRevokedRef.current(msg.server_id)
           return
         }
         if (msg.type === "error") {
