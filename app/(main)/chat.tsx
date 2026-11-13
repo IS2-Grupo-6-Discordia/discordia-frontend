@@ -2437,6 +2437,12 @@ export default function ChatScreen() {
     onMessagesDeleted: removeMessages,
     onLatestPage: syncLatestPage,
     onServerSuspended: (serverId) => setServerSuspended(serverId, true),
+    // Banned, kicked or the server was deleted: same as voice.access_revoked, the frame doesn't
+    // say why, so the notice stays neutral.
+    onAccessRevoked: (serverId) => {
+      const name = servers.find((s) => s.id === serverId)?.name
+      void dropServerLocally(serverId, name ? `Ya no tenés acceso a ${name}.` : "Ya no tenés acceso a un servidor.")
+    },
     getKnownMessageIds: () => messagesRef.current.map((m) => m.id),
   })
 
