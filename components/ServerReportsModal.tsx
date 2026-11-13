@@ -6,6 +6,7 @@ import { ApiError, friendlyError } from "@/lib/api/client"
 import { deleteMessage } from "@/lib/api/messages"
 import { REPORT_REASONS, listServerReports, resolveServerReport, type ReportStatus, type ServerReport } from "@/lib/api/reports"
 import AuditLogList from "./AuditLogList"
+import BannedWordsList from "./BannedWordsList"
 import ModalShell from "./ModalShell"
 import PressableScale from "./PressableScale"
 
@@ -16,17 +17,23 @@ interface ServerReportsModalProps {
   nameOf: (userId: string) => string | null
   channelNameOf: (channelId: string) => string | null
   canDeleteMessages: boolean
+  // HU-63: `moderate_members` shows the "Palabras" tab with the banned words.
+  canManageWords: boolean
   onClose: () => void
   onChanged: () => void
 }
 
-type Tab = ReportStatus | "resolved" | "log"
+type Tab = ReportStatus | "resolved" | "log" | "words"
 
 const TABS: { value: Tab; label: string }[] = [
   { value: "pending", label: "Pendientes" },
   { value: "resolved", label: "Resueltos" },
   { value: "log", label: "Registro" },
+  { value: "words", label: "Palabras" },
 ]
+
+// Tabs that aren't the reports list: each one renders its own component.
+const isReportsTab = (tab: Tab) => tab === "pending" || tab === "resolved"
 
 function reasonLabel(reason: string): string {
   return REPORT_REASONS.find((r) => r.value === reason)?.label ?? reason
@@ -44,6 +51,7 @@ export default function ServerReportsModal({
   nameOf: memberName,
   channelNameOf,
   canDeleteMessages,
+  canManageWords,
   onClose,
   onChanged,
 }: ServerReportsModalProps) {
@@ -55,7 +63,7 @@ export default function ServerReportsModal({
   const [busyId, setBusyId] = useState<string | null>(null)
 
   const load = useCallback(async () => {
-    if (tab === "log") return
+    if (!isReportsTab(tab)) return
     setLoading(true)
     setError("")
     try {
@@ -117,7 +125,7 @@ export default function ServerReportsModal({
   return (
     <ModalShell visible={visible} onClose={onClose} title="Moderación" subtitle={serverName} maxWidth={520}>
       <View style={{ flexDirection: "row", gap: 6, marginBottom: 12 }}>
-        {TABS.map((t) => {
+        {TABS.filter((t) => t.value !== "words" || canManageWords).map((t) => {
           const selected = tab === t.value
           return (
             <Pressable
@@ -141,14 +149,15 @@ export default function ServerReportsModal({
       </View>
 
       {tab === "log" ? <AuditLogList serverId={serverId} memberName={memberName} /> : null}
+      {tab === "words" ? <BannedWordsList serverId={serverId} /> : null}
 
-      {tab !== "log" && error ? (
+      {isReportsTab(tab) && error ? (
         <View style={NOTICE_ERROR}>
           <Text style={{ color: "#FF9E94", fontSize: 12.5 }}>{error}</Text>
         </View>
       ) : null}
 
-      {tab === "log" ? null : loading ? (
+      {!isReportsTab(tab) ? null : loading ? (
         <View style={{ paddingVertical: 30, alignItems: "center" }}>
           <ActivityIndicator color="#FF7F72" />
         </View>

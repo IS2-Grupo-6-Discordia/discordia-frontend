@@ -5479,6 +5479,7 @@ export default function ChatScreen() {
         nameOf={(id) => roles.flatMap((r) => r.members).find((m) => m.id === id)?.name ?? null}
         channelNameOf={(id) => categories.flatMap((c) => c.channels).find((c) => c.id === id)?.name ?? null}
         canDeleteMessages={canDeleteReportedMessages}
+        canManageWords={canMute}
         onClose={() => setServerReportsOpen(false)}
         onChanged={refreshPendingReports}
       />
