@@ -1236,6 +1236,66 @@ export async function listMutes(serverId: string): Promise<Record<string, string
   return Object.fromEntries(rows.map((row) => [row.user_id, row.expires_at]))
 }
 
+// ---- Moderation: banned words (HU-63) ----------------------------------------
+
+// Mirrored from microservicio-servidores: one word of up to 50 characters, at
+// most 100 per server. The backend stores them lowercase and without accents,
+// and mensajes rejects (422) any message or edit that contains one.
+export const BANNED_WORD_MAX = 50
+export const BANNED_WORDS_MAX_PER_SERVER = 100
+
+export interface BannedWord {
+  word: string
+  createdBy: string
+  createdAt: string
+}
+
+interface BackendBannedWord {
+  word: string
+  created_by: string
+  created_at: string
+}
+
+function toBannedWord(row: BackendBannedWord): BannedWord {
+  return { word: row.word, createdBy: row.created_by, createdAt: row.created_at }
+}
+
+// HU-63: the server's list, alphabetically. Requires MODERATE_MEMBERS.
+export async function listBannedWords(serverId: string): Promise<BannedWord[]> {
+  if (WRITE_USE_MOCK) {
+    await mockDelay(300)
+    return []
+  }
+
+  const rows = await api<BackendBannedWord[]>(`/servers/${serverId}/banned-words`)
+  return rows.map(toBannedWord)
+}
+
+// HU-63: add a word. Adding one that's already there (in any case or accents)
+// is a no-op that returns the stored one.
+export async function addBannedWord(serverId: string, word: string): Promise<BannedWord> {
+  if (WRITE_USE_MOCK) {
+    await mockDelay()
+    return { word: word.trim().toLowerCase(), createdBy: "", createdAt: new Date().toISOString() }
+  }
+
+  const row = await api<BackendBannedWord>(
+    `/servers/${serverId}/banned-words/${encodeURIComponent(word.trim())}`,
+    { method: "PUT" },
+  )
+  return toBannedWord(row)
+}
+
+// HU-63: remove a word from the list.
+export async function removeBannedWord(serverId: string, word: string): Promise<void> {
+  if (WRITE_USE_MOCK) {
+    await mockDelay()
+    return
+  }
+
+  await api<void>(`/servers/${serverId}/banned-words/${encodeURIComponent(word)}`, { method: "DELETE" })
+}
+
 // ---- HU-4: categories --------------------------------------------------------
 
 // Create a category in a server. Requires MANAGE_CHANNELS.

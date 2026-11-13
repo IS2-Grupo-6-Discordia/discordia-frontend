@@ -7,12 +7,14 @@ export type AuditAction =
   | "member_muted"
   | "member_unmuted"
   | "message_deleted"
+  | "banned_word_added"
+  | "banned_word_removed"
   | "report_reviewed"
   | "report_dismissed"
   | "server_suspended"
   | "server_reactivated"
 
-export type AuditGroup = "bans" | "kicks" | "mutes" | "messages" | "reports" | "staff"
+export type AuditGroup = "bans" | "kicks" | "mutes" | "messages" | "words" | "reports" | "staff"
 
 export interface AuditEntry {
   id: string
