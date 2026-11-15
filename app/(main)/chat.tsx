@@ -230,6 +230,7 @@ function membersToRoleGroups(members: ServerMember[]): RoleGroup[] {
     id: m.userId,
     name: m.name,
     avatar: m.avatar,
+    avatarUrl: m.avatarUrl ?? null,
     color,
     status: m.status,
     customStatus: m.customStatus,
@@ -1038,6 +1039,12 @@ export default function ChatScreen() {
 
   // Dónde va la línea: sobre el primer mensaje de otro que llegó después de la última lectura y
   // antes de abrir el canal, y cuántos son. Sin mensajes en ese rango no hay línea.
+  const avatarUrlById = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const group of roles) for (const m of group.members) if (m.avatarUrl) map.set(m.id, m.avatarUrl)
+    return map
+  }, [roles])
+
   const unreadDivider = useMemo(() => {
     if (!unreadMark || unreadMark.channelId !== viewedChannel) return null
     let firstId = ""
@@ -3271,7 +3278,7 @@ export default function ChatScreen() {
               style={{
                 position: "absolute",
                 left: Math.max(8, Math.min(serverMenu.x, windowWidth - Math.max(serverMenu.w, 220) - 8)),
-                top: Math.max(8, Math.min(serverMenu.y, windowHeight - 240)),
+                top: Math.max(8, Math.min(serverMenu.y, windowHeight - (serverMenu.full ? 470 : 120))),
                 width: Math.max(serverMenu.w, 220),
                 paddingVertical: 6,
                 borderRadius: 10,
@@ -3288,7 +3295,7 @@ export default function ChatScreen() {
                   label: string,
                   icon: React.ComponentProps<typeof Ionicons>["name"],
                   onPress: () => void,
-                  opts: { disabled?: boolean; danger?: boolean } = {},
+                  opts: { disabled?: boolean; danger?: boolean; badge?: number } = {},
                 ) => (
                   <PressableScale
                     key={label}
@@ -3306,11 +3313,42 @@ export default function ChatScreen() {
                     }}
                   >
                     <Ionicons name={icon} size={16} color={opts.danger ? "#FF7F72" : "#37D6C0"} />
-                    <Text style={{ color: opts.danger ? "#FF7F72" : "#E6F3F3", fontSize: 13, fontWeight: "600" }}>
+                    <Text style={{ flex: 1, color: opts.danger ? "#FF7F72" : "#E6F3F3", fontSize: 13, fontWeight: "600" }}>
                       {label}
                     </Text>
+                    {opts.badge ? (
+                      <View style={{ minWidth: 18, height: 18, paddingHorizontal: 5, borderRadius: 9999, alignItems: "center", justifyContent: "center", backgroundColor: "#FF7F72" }}>
+                        <Text style={{ color: "#04211D", fontSize: 10, fontWeight: "800" }}>{opts.badge > 99 ? "99+" : opts.badge}</Text>
+                      </View>
+                    ) : null}
                   </PressableScale>
                 )
+                const separator = (key: string) => (
+                  <View key={key} style={{ height: 1, marginVertical: 5, marginHorizontal: 10, backgroundColor: "rgba(255,255,255,0.10)" }} />
+                )
+                const full = serverMenu.full && !activeSuspended
+                const run = (action: () => void) => () => {
+                  closeServerMenu()
+                  action()
+                }
+                const manageItems = full
+                  ? [
+                      canCreateInvite ? item("Invitar al servidor", "person-add-outline", run(handleGenerateInvite)) : null,
+                      canModerate
+                        ? item("Moderación", "shield-checkmark-outline", run(() => setServerReportsOpen(true)), { badge: pendingReports })
+                        : null,
+                      canBan ? item("Miembros baneados", "ban-outline", run(openBansModal)) : null,
+                      canManageRoles ? item("Roles", "shield-outline", run(openRoles)) : null,
+                      canAdministrate ? item("Configuración del servidor", "settings-outline", run(openSettings)) : null,
+                    ].filter(Boolean)
+                  : []
+                const exitItems = full
+                  ? [
+                      !isOwner ? item("Reportar servidor", "flag-outline", run(() => setReportTarget({ type: "server", serverId: activeServer, name: activeServerName })), { danger: true }) : null,
+                      item("Salir del servidor", "exit-outline", run(openLeaveModal), { danger: true }),
+                      isOwner ? item("Eliminar servidor", "trash-outline", run(openDeleteServer), { danger: true }) : null,
+                    ].filter(Boolean)
+                  : []
                 return (
                   <>
                     {item(
@@ -3330,23 +3368,10 @@ export default function ChatScreen() {
                       isMuted ? "notifications-outline" : "notifications-off-outline",
                       () => handleToggleMute(serverMenu.kind, serverMenu.id, !isMuted),
                     )}
-                    {serverMenu.full && !activeSuspended && canCreateInvite
-                      ? item("Invitar al servidor", "person-add-outline", () => {
-                          closeServerMenu()
-                          handleGenerateInvite()
-                        })
-                      : null}
-                    {serverMenu.full && !activeSuspended
-                      ? item(
-                          "Salir del servidor",
-                          "exit-outline",
-                          () => {
-                            closeServerMenu()
-                            openLeaveModal()
-                          },
-                          { danger: true },
-                        )
-                      : null}
+                    {manageItems.length > 0 ? separator("sep-manage") : null}
+                    {manageItems}
+                    {exitItems.length > 0 ? separator("sep-exit") : null}
+                    {exitItems}
                   </>
                 )
               })()}
@@ -3449,136 +3474,16 @@ export default function ChatScreen() {
               {mutes.servers[activeServer] ? (
                 <Ionicons name="notifications-off-outline" size={13} color="#5E7E82" />
               ) : null}
-              <Ionicons name="chevron-down" size={14} color="#8DA8AC" />
+              {canModerate && pendingReports > 0 && !activeSuspended ? (
+                <View style={{ minWidth: 17, height: 17, paddingHorizontal: 4, borderRadius: 9999, alignItems: "center", justifyContent: "center", backgroundColor: "#FF7F72" }}>
+                  <Text style={{ color: "#04211D", fontSize: 10, fontWeight: "800" }}>{pendingReports > 99 ? "99+" : pendingReports}</Text>
+                </View>
+              ) : null}
+              <View style={{ width: 26, height: 26, borderRadius: 8, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(255,255,255,0.06)" }}>
+                <Ionicons name="ellipsis-horizontal" size={15} color="#C9DADC" />
+              </View>
             </View>
           </PressableScale>
-          <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6, display: activeSuspended ? "none" : "flex" }}>
-
-            {!isOwner && isRealServerId(activeServer) ? (
-              <PressableScale
-                onPress={() => setReportTarget({ type: "server", serverId: activeServer, name: activeServerName })}
-                accessibilityLabel="Reportar servidor"
-                hoverStyle={{ backgroundColor: "rgba(255,127,114,0.14)" }}
-                style={{
-                  flexDirection: "row",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  paddingHorizontal: 10,
-                  paddingVertical: 6,
-                  borderRadius: 8,
-                  backgroundColor: "rgba(255,255,255,0.05)",
-                }}
-              >
-                <Ionicons name="flag-outline" size={13} color="#8DA8AC" />
-              </PressableScale>
-            ) : null}
-            {canModerate ? (
-              <PressableScale
-                onPress={() => setServerReportsOpen(true)}
-                accessibilityLabel={pendingReports > 0 ? `Moderación del servidor, ${pendingReports} reportes pendientes` : "Moderación del servidor"}
-                hoverStyle={{ backgroundColor: "rgba(255,127,114,0.30)" }}
-                style={{
-                  flexDirection: "row",
-                  alignItems: "center",
-                  gap: 5,
-                  paddingHorizontal: 10,
-                  paddingVertical: 5,
-                  borderRadius: 8,
-                  backgroundColor: "rgba(255,127,114,0.18)",
-                  borderWidth: 1,
-                  borderColor: "rgba(255,127,114,0.55)",
-                }}
-              >
-                <Ionicons name="shield-outline" size={13} color="#FF7F72" />
-                <Text style={{ color: "#FF7F72", fontSize: 11.5, fontWeight: "700" }}>Moderación</Text>
-                {pendingReports > 0 ? (
-                  <View style={{ minWidth: 17, height: 17, paddingHorizontal: 4, borderRadius: 9999, alignItems: "center", justifyContent: "center", backgroundColor: "#FF7F72" }}>
-                    <Text style={{ color: "#04211D", fontSize: 10, fontWeight: "800" }}>{pendingReports > 99 ? "99+" : pendingReports}</Text>
-                  </View>
-                ) : null}
-              </PressableScale>
-            ) : null}
-            {canBan ? (
-              <PressableScale
-                onPress={openBansModal}
-                accessibilityLabel="Ver miembros baneados"
-                hoverStyle={{ backgroundColor: "rgba(255,127,114,0.30)" }}
-                style={{
-                  flexDirection: "row",
-                  alignItems: "center",
-                  gap: 5,
-                  paddingHorizontal: 10,
-                  paddingVertical: 5,
-                  borderRadius: 8,
-                  backgroundColor: "rgba(255,127,114,0.18)",
-                  borderWidth: 1,
-                  borderColor: "rgba(255,127,114,0.55)",
-                }}
-              >
-                <Ionicons name="ban-outline" size={13} color="#FF7F72" />
-                <Text style={{ color: "#FF7F72", fontSize: 11.5, fontWeight: "700" }}>Miembros baneados</Text>
-              </PressableScale>
-            ) : null}
-          </View>
-          {/* Admin tools — banner config (#95), roles (#92), delete server
-              (#97). Rendered as a separate row of uniform square icon buttons
-              so they never overflow the sidebar, and only when the member can
-              see at least one of them, so the row is never empty. */}
-          {!activeSuspended && (canManageRoles || (isOwner && isRealServerId(activeServer))) ? (
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-              {canAdministrate ? (
-                <PressableScale
-                  onPress={openSettings}
-                  accessibilityLabel="Configuración del servidor"
-                  hoverStyle={{ backgroundColor: "rgba(255,255,255,0.12)" }}
-                  style={{
-                    width: 34,
-                    height: 30,
-                    alignItems: "center",
-                    justifyContent: "center",
-                    borderRadius: 8,
-                    backgroundColor: "rgba(255,255,255,0.05)",
-                  }}
-                >
-                  <Ionicons name="settings-outline" size={15} color="#8DA8AC" />
-                </PressableScale>
-              ) : null}
-              {canManageRoles ? (
-                <PressableScale
-                  onPress={openRoles}
-                  accessibilityLabel="Roles del servidor"
-                  hoverStyle={{ backgroundColor: "rgba(255,255,255,0.12)" }}
-                  style={{
-                    width: 34,
-                    height: 30,
-                    alignItems: "center",
-                    justifyContent: "center",
-                    borderRadius: 8,
-                    backgroundColor: "rgba(255,255,255,0.05)",
-                  }}
-                >
-                  <Ionicons name="shield-outline" size={15} color="#8DA8AC" />
-                </PressableScale>
-              ) : null}
-              {isOwner && isRealServerId(activeServer) ? (
-                <PressableScale
-                  onPress={openDeleteServer}
-                  accessibilityLabel="Eliminar servidor"
-                  hoverStyle={{ backgroundColor: "rgba(255,127,114,0.22)" }}
-                  style={{
-                    width: 34,
-                    height: 30,
-                    alignItems: "center",
-                    justifyContent: "center",
-                    borderRadius: 8,
-                    backgroundColor: "rgba(255,127,114,0.12)",
-                  }}
-                >
-                  <Ionicons name="trash-outline" size={15} color="#FF7F72" />
-                </PressableScale>
-              ) : null}
-            </View>
-          ) : null}
         </View>
         ) : null}
 
@@ -4098,8 +4003,13 @@ export default function ChatScreen() {
             // Only wire navigation when the message carries a public author id.
             // Mock messages don't, so their authors stay non-tappable for now.
             const goToAuthor = msg.authorId
-              ? () => router.push(`/users/${msg.authorId}`)
+              ? () => router.push(msg.authorId === user?.id ? "/(main)/profile" : `/users/${msg.authorId}`)
               : undefined
+            const authorAvatarUrl = msg.authorId
+              ? msg.authorId === user?.id
+                ? user?.avatarUrl ?? null
+                : avatarUrlById.get(msg.authorId) ?? null
+              : null
             const reportable = canReportMessage(msg)
             const mentionsMe =
               !!user?.id &&
@@ -4152,7 +4062,7 @@ export default function ChatScreen() {
                 disabled={!goToAuthor}
                 accessibilityLabel={goToAuthor ? `Ver perfil de ${msg.author}` : undefined}
               >
-                <Avatar initials={authorInitials} />
+                <Avatar initials={authorInitials} uri={authorAvatarUrl} />
               </TouchableOpacity>
               <View style={{ flex: 1 }}>
                 <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 8, flexWrap: "wrap" }}>
@@ -4574,7 +4484,7 @@ export default function ChatScreen() {
                     return (
                       <TouchableOpacity
                         key={m.id}
-                        onPress={() => router.push(`/users/${m.id}`)}
+                        onPress={() => router.push(m.id === user?.id ? "/(main)/profile" : `/users/${m.id}`)}
                         accessibilityLabel={`Ver perfil de ${m.name}`}
                         {...(Platform.OS === "web"
                           ? {
@@ -4594,7 +4504,7 @@ export default function ChatScreen() {
                         }}
                       >
                         <View style={{ position: "relative" }}>
-                          <Avatar initials={m.avatar} size={26} />
+                          <Avatar initials={m.avatar} uri={m.avatarUrl} size={26} />
                           <StatusDot status={m.status} />
                         </View>
                         <View style={{ flex: 1, minWidth: 0 }}>
