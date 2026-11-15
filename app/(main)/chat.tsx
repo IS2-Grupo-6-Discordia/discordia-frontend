@@ -125,6 +125,7 @@ import PressableScale from "@/components/PressableScale"
 import DeleteServerModal from "@/components/DeleteServerModal"
 import ReportModal from "@/components/ReportModal"
 import { getPendingReportCount, type ReportTarget } from "@/lib/api/reports"
+import ServerMetricsModal from "@/components/ServerMetricsModal"
 import ServerReportsModal from "@/components/ServerReportsModal"
 import ServerSettingsModal from "@/components/ServerSettingsModal"
 import RolesModal from "@/components/RolesModal"
@@ -641,6 +642,7 @@ export default function ChatScreen() {
   const [, setMuteClock] = useState(0)
   const [reportTarget, setReportTarget] = useState<ReportTarget | null>(null)
   const [serverReportsOpen, setServerReportsOpen] = useState(false)
+  const [serverMetricsOpen, setServerMetricsOpen] = useState(false)
   const [pendingReports, setPendingReports] = useState(0)
   const [banReason, setBanReason] = useState("")
   const [banBusy, setBanBusy] = useState(false)
@@ -1329,6 +1331,9 @@ export default function ChatScreen() {
   const canMute = isRealServerId(activeServer) && hasServerPermission(myPerms, MODERATE_MEMBERS_PERMISSION)
   const canDeleteReportedMessages = isRealServerId(activeServer) && hasServerPermission(myPerms, "manage_messages")
   const canModerate = canBan || canKick || canMute || canDeleteReportedMessages
+  // Activity metrics of the server: `manage_server` (the owner and `administrator`
+  // always qualify). Only hides the button; both backends check it again (CA3).
+  const canViewMetrics = isRealServerId(activeServer) && hasServerPermission(myPerms, "manage_server")
 
   const refreshPendingReports = useCallback(() => {
     if (!canModerate || !activeServer) return
@@ -3524,8 +3529,25 @@ export default function ChatScreen() {
               (#97). Rendered as a separate row of uniform square icon buttons
               so they never overflow the sidebar, and only when the member can
               see at least one of them, so the row is never empty. */}
-          {!activeSuspended && (canManageRoles || (isOwner && isRealServerId(activeServer))) ? (
+          {!activeSuspended && (canManageRoles || canViewMetrics || (isOwner && isRealServerId(activeServer))) ? (
             <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+              {canViewMetrics ? (
+                <PressableScale
+                  onPress={() => setServerMetricsOpen(true)}
+                  accessibilityLabel="Métricas del servidor"
+                  hoverStyle={{ backgroundColor: "rgba(255,255,255,0.12)" }}
+                  style={{
+                    width: 34,
+                    height: 30,
+                    alignItems: "center",
+                    justifyContent: "center",
+                    borderRadius: 8,
+                    backgroundColor: "rgba(255,255,255,0.05)",
+                  }}
+                >
+                  <Ionicons name="stats-chart-outline" size={15} color="#8DA8AC" />
+                </PressableScale>
+              ) : null}
               {canAdministrate ? (
                 <PressableScale
                   onPress={openSettings}
@@ -5488,6 +5510,12 @@ export default function ChatScreen() {
         canManageWords={canMute}
         onClose={() => setServerReportsOpen(false)}
         onChanged={refreshPendingReports}
+      />
+      <ServerMetricsModal
+        visible={serverMetricsOpen}
+        serverId={activeServer}
+        serverName={activeServerName}
+        onClose={() => setServerMetricsOpen(false)}
       />
 
       <DeleteServerModal
