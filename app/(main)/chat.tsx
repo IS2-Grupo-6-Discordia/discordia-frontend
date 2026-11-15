@@ -125,6 +125,7 @@ import PressableScale from "@/components/PressableScale"
 import DeleteServerModal from "@/components/DeleteServerModal"
 import ReportModal from "@/components/ReportModal"
 import { getPendingReportCount, type ReportTarget } from "@/lib/api/reports"
+import ServerMetricsModal from "@/components/ServerMetricsModal"
 import ServerReportsModal from "@/components/ServerReportsModal"
 import ServerSettingsModal from "@/components/ServerSettingsModal"
 import RolesModal from "@/components/RolesModal"
@@ -642,6 +643,7 @@ export default function ChatScreen() {
   const [, setMuteClock] = useState(0)
   const [reportTarget, setReportTarget] = useState<ReportTarget | null>(null)
   const [serverReportsOpen, setServerReportsOpen] = useState(false)
+  const [serverMetricsOpen, setServerMetricsOpen] = useState(false)
   const [pendingReports, setPendingReports] = useState(0)
   const [banReason, setBanReason] = useState("")
   const [banBusy, setBanBusy] = useState(false)
@@ -1336,6 +1338,9 @@ export default function ChatScreen() {
   const canMute = isRealServerId(activeServer) && hasServerPermission(myPerms, MODERATE_MEMBERS_PERMISSION)
   const canDeleteReportedMessages = isRealServerId(activeServer) && hasServerPermission(myPerms, "manage_messages")
   const canModerate = canBan || canKick || canMute || canDeleteReportedMessages
+  // Activity metrics of the server: `manage_server` (the owner and `administrator`
+  // always qualify). Only hides the button; both backends check it again (CA3).
+  const canViewMetrics = isRealServerId(activeServer) && hasServerPermission(myPerms, "manage_server")
 
   const refreshPendingReports = useCallback(() => {
     if (!canModerate || !activeServer) return
@@ -3278,7 +3283,7 @@ export default function ChatScreen() {
               style={{
                 position: "absolute",
                 left: Math.max(8, Math.min(serverMenu.x, windowWidth - Math.max(serverMenu.w, 220) - 8)),
-                top: Math.max(8, Math.min(serverMenu.y, windowHeight - (serverMenu.full ? 470 : 120))),
+                top: Math.max(8, Math.min(serverMenu.y, windowHeight - (serverMenu.full ? 510 : 120))),
                 width: Math.max(serverMenu.w, 220),
                 paddingVertical: 6,
                 borderRadius: 10,
@@ -3339,6 +3344,7 @@ export default function ChatScreen() {
                         : null,
                       canBan ? item("Miembros baneados", "ban-outline", run(openBansModal)) : null,
                       canManageRoles ? item("Roles", "shield-outline", run(openRoles)) : null,
+                      canViewMetrics ? item("Métricas del servidor", "stats-chart-outline", run(() => setServerMetricsOpen(true))) : null,
                       canAdministrate ? item("Configuración del servidor", "settings-outline", run(openSettings)) : null,
                     ].filter(Boolean)
                   : []
@@ -5398,6 +5404,12 @@ export default function ChatScreen() {
         canManageWords={canMute}
         onClose={() => setServerReportsOpen(false)}
         onChanged={refreshPendingReports}
+      />
+      <ServerMetricsModal
+        visible={serverMetricsOpen}
+        serverId={activeServer}
+        serverName={activeServerName}
+        onClose={() => setServerMetricsOpen(false)}
       />
 
       <DeleteServerModal
