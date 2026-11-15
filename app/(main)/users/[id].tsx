@@ -44,6 +44,13 @@ function InfoRow({ label, value, muted }: { label: string; value: string; muted?
   )
 }
 
+function memberSince(iso?: string | null): string | null {
+  if (!iso) return null
+  const date = new Date(iso)
+  if (isNaN(date.getTime())) return null
+  return date.toLocaleDateString("es-AR", { year: "numeric", month: "long", day: "numeric" })
+}
+
 // Initials for the fallback avatar: first letter of up to 2 words.
 function initialsFor(name: string): string {
   const letters = name
@@ -242,6 +249,10 @@ export default function PublicProfileScreen() {
                   value={profile.bio ? profile.bio : "Sin descripción"}
                   muted={!profile.bio}
                 />
+
+                {memberSince(profile.createdAt) ? (
+                  <InfoRow label="Miembro desde" value={memberSince(profile.createdAt)!} muted />
+                ) : null}
 
                 <View>
                   <Text style={labelStyle}>

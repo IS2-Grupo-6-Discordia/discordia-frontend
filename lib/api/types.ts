@@ -29,6 +29,7 @@ export interface PublicUser {
   customStatus?: string | null
   avatarUrl?: string | null
   status: PresenceStatus
+  createdAt?: string | null
 }
 
 export interface AuthResponse {

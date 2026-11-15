@@ -130,6 +130,9 @@ function cameraErrorMessage(err: unknown): string {
   return "No pudimos cambiar el estado de tu cámara. Puede que el canal no tenga video habilitado."
 }
 
+const PEER_LEFT_GRACE_MS = 20_000
+const PEER_LEFT_MESSAGE = "La otra persona se desconectó, así que cortamos la llamada."
+
 export const MODERATOR_MUTED_MESSAGE =
   "Un moderador te silenció en este servidor. Vas a poder hablar cuando termine el silencio."
 
@@ -243,8 +246,12 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
 
   // Hang up when the provider goes away (logout) or the tab closes: an open
   // LiveKit session keeps billing minutes and keeps us listed in the room.
+  const activeCallIdRef = useRef<string | null>(null)
   useEffect(() => {
     const hangUp = () => {
+      const callId = activeCallIdRef.current
+      activeCallIdRef.current = null
+      if (callId) apiEndCall(callId, true).catch(() => undefined)
       abortRef.current?.abort()
       handleRef.current?.disconnect().catch(() => undefined)
       handleRef.current = null
@@ -545,6 +552,21 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
   }, [call, callStatus, status, reset, resetCall])
 
   useCallSignaling(!!user, handleCallMessage)
+
+  useEffect(() => {
+    activeCallIdRef.current = call && callStatus !== "idle" ? call.id : null
+  }, [call, callStatus])
+
+  const endCurrentCallRef = useRef(endCurrentCall)
+  endCurrentCallRef.current = endCurrentCall
+  const peerInRoom = roomParticipants.some((p) => !p.isLocal)
+  useEffect(() => {
+    if (callStatus !== "connected" || peerInRoom) return
+    const timer = setTimeout(() => {
+      endCurrentCallRef.current().then(() => setDropNotice(PEER_LEFT_MESSAGE))
+    }, PEER_LEFT_GRACE_MS)
+    return () => clearTimeout(timer)
+  }, [callStatus, peerInRoom])
 
   // Resolve peer name for calls.
   useEffect(() => {
