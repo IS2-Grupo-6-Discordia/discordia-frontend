@@ -188,6 +188,7 @@ export interface Member {
   id: string
   name: string
   avatar: string
+  avatarUrl?: string | null
   color: string
   status: PresenceStatus
   customStatus?: string | null

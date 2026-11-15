@@ -8,7 +8,7 @@ import {
   ActivityIndicator,
   Image,
 } from "react-native"
-import { useLocalSearchParams, useRouter } from "expo-router"
+import { Redirect, useLocalSearchParams, useRouter } from "expo-router"
 import { Ionicons } from "@expo/vector-icons"
 import { useAuth } from "@/context/AuthContext"
 import { useVoice } from "@/context/VoiceContext"
@@ -76,10 +76,7 @@ export default function PublicProfileScreen() {
 
   useEffect(() => {
     // Viewing your own id -> send to the editable profile screen instead.
-    if (id && user?.id && id === user.id) {
-      router.replace("/profile")
-      return
-    }
+    if (id && user?.id && id === user.id) return
 
     let active = true
     setLoading(true)
@@ -127,6 +124,8 @@ export default function PublicProfileScreen() {
       clearInterval(timer)
     }
   }, [id, notFound, user?.id])
+
+  if (id && user?.id && id === user.id) return <Redirect href="/(main)/profile" />
 
   return (
     <View style={{ flex: 1, backgroundColor: "#0A1620" }}>
