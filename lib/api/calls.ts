@@ -28,6 +28,6 @@ export async function rejectCall(callId: string): Promise<void> {
 }
 
 // Hang up an active call.
-export async function endCall(callId: string): Promise<void> {
-  await api<void>(`/voice/calls/${callId}/end`, { method: "POST" })
+export async function endCall(callId: string, keepalive = false): Promise<void> {
+  await api<void>(`/voice/calls/${callId}/end`, { method: "POST", keepalive })
 }

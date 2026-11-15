@@ -67,6 +67,7 @@ interface BackendPublicUser {
   custom_status?: string | null
   avatar_url?: string | null
   status?: PresenceStatus
+  created_at?: string | null
 }
 
 function toPublicUser(backendUser: BackendPublicUser): PublicUser {
@@ -77,6 +78,7 @@ function toPublicUser(backendUser: BackendPublicUser): PublicUser {
     customStatus: backendUser.custom_status ?? null,
     avatarUrl: backendUser.avatar_url ?? null,
     status: backendUser.status ?? "offline",
+    createdAt: backendUser.created_at ?? null,
   }
 }
 
