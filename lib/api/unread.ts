@@ -5,8 +5,14 @@ import type { UnreadSummary } from "./types"
 const MAX_SERVER_IDS = 50
 
 interface BackendUnreadSummary {
-  channels: { channel_id: string; server_id: string; unread_count: number; mention_count: number }[]
-  servers: { server_id: string; unread_count: number; mention_count: number }[]
+  channels: {
+    channel_id: string
+    server_id: string
+    unread_count: number
+    mention_count: number
+    muted?: boolean
+  }[]
+  servers: { server_id: string; unread_count: number; mention_count: number; muted?: boolean }[]
 }
 
 export const EMPTY_UNREAD: UnreadSummary = { channels: {}, servers: {} }
@@ -21,17 +27,40 @@ export async function getUnreadSummary(serverIds: string[]): Promise<UnreadSumma
         unread: c.unread_count,
         mentions: c.mention_count,
         serverId: c.server_id,
+        muted: !!c.muted,
       }
     }
     for (const s of res.servers) {
-      summary.servers[s.server_id] = { unread: s.unread_count, mentions: s.mention_count }
+      summary.servers[s.server_id] = {
+        unread: s.unread_count,
+        mentions: s.mention_count,
+        muted: !!s.muted,
+      }
     }
   }
   return summary
 }
 
-export async function markChannelRead(channelId: string): Promise<void> {
-  await api(`/channels/${channelId}/read`, { method: "POST" })
+export interface ChannelReadMark {
+  previousReadAt: string | null
+  lastReadAt: string | null
+}
+
+export async function markChannelRead(channelId: string): Promise<ChannelReadMark> {
+  const res = await api<{ last_read_at?: string; previous_read_at?: string | null } | undefined>(
+    `/channels/${channelId}/read`,
+    { method: "POST" },
+  )
+  return { previousReadAt: res?.previous_read_at ?? null, lastReadAt: res?.last_read_at ?? null }
+}
+
+export async function markAllRead(serverIds: string[]): Promise<void> {
+  for (let i = 0; i < serverIds.length; i += MAX_SERVER_IDS) {
+    await api("/read-all", {
+      method: "POST",
+      body: JSON.stringify({ server_ids: serverIds.slice(i, i + MAX_SERVER_IDS) }),
+    })
+  }
 }
 
 export function withoutChannel(summary: UnreadSummary, channelId: string): UnreadSummary {
@@ -46,7 +75,21 @@ export function withoutChannel(summary: UnreadSummary, channelId: string): Unrea
     const unread = server.unread - removed.unread
     const mentions = server.mentions - removed.mentions
     if (unread <= 0) delete servers[serverId]
-    else servers[serverId] = { unread, mentions: Math.max(0, mentions) }
+    else {
+      const remaining = Object.values(channels).filter((c) => c.serverId === serverId)
+      const muted = remaining.length > 0 && remaining.every((c) => c.muted)
+      servers[serverId] = { unread, mentions: Math.max(0, mentions), muted }
+    }
   }
+  return { channels, servers }
+}
+
+export function withoutServer(summary: UnreadSummary, serverId: string): UnreadSummary {
+  const channels: UnreadSummary["channels"] = {}
+  for (const [id, counts] of Object.entries(summary.channels)) {
+    if (counts.serverId !== serverId) channels[id] = counts
+  }
+  const servers = { ...summary.servers }
+  delete servers[serverId]
   return { channels, servers }
 }

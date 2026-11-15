@@ -21,6 +21,7 @@ import type { User } from "@/lib/api/types"
 
 const NAME_MAX = 80
 const BIO_MAX = 300
+const CUSTOM_STATUS_MAX = 64
 
 function ErrorBox({ text }: { text: string }) {
   return (
@@ -106,6 +107,8 @@ export default function ProfileScreen() {
   const [editing, setEditing] = useState(false)
   const [name, setName] = useState("")
   const [bio, setBio] = useState("")
+  const [customStatus, setCustomStatus] = useState("")
+  const [clearingStatus, setClearingStatus] = useState(false)
   const [saving, setSaving] = useState(false)
   const [formError, setFormError] = useState("")
 
@@ -137,6 +140,7 @@ export default function ProfileScreen() {
     if (!profile) return
     setName(profile.name)
     setBio(profile.bio ?? "")
+    setCustomStatus(profile.customStatus ?? "")
     setFormError("")
     setEditing(true)
   }
@@ -154,13 +158,17 @@ export default function ProfileScreen() {
       return
     }
 
-    const updates: { name?: string; bio?: string | null } = {}
+    const updates: { name?: string; bio?: string | null; customStatus?: string | null } = {}
     if (trimmedName !== profile.name) {
       updates.name = trimmedName
     }
     const nextBio = bio.trim() === "" ? null : bio
     if (nextBio !== (profile.bio ?? null)) {
       updates.bio = nextBio
+    }
+    const nextStatus = customStatus.trim() === "" ? null : customStatus.trim()
+    if (nextStatus !== (profile.customStatus ?? null)) {
+      updates.customStatus = nextStatus
     }
 
     if (Object.keys(updates).length === 0) {
@@ -179,6 +187,22 @@ export default function ProfileScreen() {
       setFormError(friendlyError(err))
     } finally {
       setSaving(false)
+    }
+  }
+
+  // CA3: borrar el estado sin entrar a editar; deja de verse apenas responde el backend.
+  const handleClearStatus = async () => {
+    if (!profile?.customStatus || clearingStatus) return
+    setClearingStatus(true)
+    setFormError("")
+    try {
+      const updated = await updateProfile({ customStatus: null })
+      setProfile(updated)
+      setUser(updated)
+    } catch (err) {
+      setLoadError(friendlyError(err))
+    } finally {
+      setClearingStatus(false)
     }
   }
 
@@ -351,6 +375,20 @@ export default function ProfileScreen() {
                       style={{ ...inputStyle, marginBottom: 14 }}
                     />
 
+                    <Text style={labelStyle}>Estado personalizado</Text>
+                    <TextInput
+                      value={customStatus}
+                      onChangeText={setCustomStatus}
+                      placeholder="¿Qué estás haciendo?"
+                      placeholderTextColor="#5E7E82"
+                      maxLength={CUSTOM_STATUS_MAX}
+                      accessibilityLabel="Estado personalizado"
+                      style={{ ...inputStyle, marginBottom: 4 }}
+                    />
+                    <Text style={{ color: "#5E7E82", fontSize: 10, textAlign: "right", marginBottom: 14 }}>
+                      {customStatus.length}/{CUSTOM_STATUS_MAX}
+                    </Text>
+
                     <Text style={labelStyle}>Bio</Text>
                     <TextInput
                       value={bio}
@@ -420,6 +458,26 @@ export default function ProfileScreen() {
                       <Text style={{ color: "#8DA8AC", fontSize: 13, marginTop: 3 }}>
                         {display.email}
                       </Text>
+                      {display.customStatus ? (
+                        <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 8 }}>
+                          <Text style={{ color: "#C9DEDF", fontSize: 13, textAlign: "center", flexShrink: 1 }}>
+                            {display.customStatus}
+                          </Text>
+                          <PressableScale
+                            onPress={handleClearStatus}
+                            disabled={clearingStatus}
+                            accessibilityLabel="Borrar estado personalizado"
+                            hoverStyle={{ backgroundColor: "rgba(255,255,255,0.10)" }}
+                            style={{ padding: 3, borderRadius: 9999, opacity: clearingStatus ? 0.5 : 1 }}
+                          >
+                            {clearingStatus ? (
+                              <ActivityIndicator size="small" color="#8DA8AC" />
+                            ) : (
+                              <Ionicons name="close" size={14} color="#8DA8AC" />
+                            )}
+                          </PressableScale>
+                        </View>
+                      ) : null}
                     </View>
 
                     <View style={{ height: 1, backgroundColor: "rgba(255,255,255,0.08)", marginBottom: 18 }} />

@@ -2,10 +2,13 @@ import { createContext, useContext, useState, useCallback, useEffect, useRef } f
 import type { ReactNode } from "react"
 import { Platform } from "react-native"
 import { joinVoiceChannel } from "@/lib/api/voice"
+import { initiateCall, acceptCall as apiAcceptCall, rejectCall as apiRejectCall, endCall as apiEndCall } from "@/lib/api/calls"
 import { getUsersBatch, initials } from "@/lib/api/auth"
 import { friendlyError } from "@/lib/api/client"
 import { useAuth } from "@/context/AuthContext"
 import { playJoinSound } from "@/lib/joinSound"
+import { useCallSignaling } from "@/lib/useCallSignaling"
+import type { CallSignalingMessage } from "@/lib/api/types"
 import {
   CameraError,
   connectVoiceRoom,
@@ -46,6 +49,17 @@ export interface VoiceParticipant {
 
 export type VoiceStatus = "idle" | "connecting" | "connected"
 
+// HU-50: private 1-on-1 call state.
+export type CallStatus = "idle" | "ringing" | "connecting" | "connected"
+export type CallDirection = "outgoing" | "incoming"
+
+export interface CallState {
+  id: string
+  peerId: string
+  peerName?: string
+  direction: CallDirection
+}
+
 interface VoiceState {
   supported: boolean
   status: VoiceStatus
@@ -62,6 +76,9 @@ interface VoiceState {
   // HU-19: whether our own mic is transmitting. Every join starts unmuted
   // (HU-17 CA1), also when switching channels.
   micEnabled: boolean
+  // HU-60: false while a moderator has us muted in this server. LiveKit took
+  // the mic away; it comes back on its own when the mute ends.
+  micAllowed: boolean
   // Rejects with a user-facing Spanish message if the mic can't be re-enabled.
   toggleMic: () => Promise<void>
   camEnabled: boolean
@@ -72,6 +89,13 @@ interface VoiceState {
   screenShareError: string
   toggleScreenShare: () => Promise<void>
   toggleLocalMute: (participantId: string) => void
+  // HU-50: private 1-on-1 calls.
+  call: CallState | null
+  callStatus: CallStatus
+  startCall: (calleeId: string) => Promise<void>
+  acceptIncomingCall: () => Promise<void>
+  rejectIncomingCall: () => Promise<void>
+  endCurrentCall: () => Promise<void>
 }
 
 const DROP_MESSAGES: Record<VoiceDropReason, string> = {
@@ -105,6 +129,12 @@ function cameraErrorMessage(err: unknown): string {
   }
   return "No pudimos cambiar el estado de tu cámara. Puede que el canal no tenga video habilitado."
 }
+
+const PEER_LEFT_GRACE_MS = 20_000
+const PEER_LEFT_MESSAGE = "La otra persona se desconectó, así que cortamos la llamada."
+
+export const MODERATOR_MUTED_MESSAGE =
+  "Un moderador te silenció en este servidor. Vas a poder hablar cuando termine el silencio."
 
 const VoiceContext = createContext<VoiceState | null>(null)
 
@@ -216,8 +246,12 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
 
   // Hang up when the provider goes away (logout) or the tab closes: an open
   // LiveKit session keeps billing minutes and keeps us listed in the room.
+  const activeCallIdRef = useRef<string | null>(null)
   useEffect(() => {
     const hangUp = () => {
+      const callId = activeCallIdRef.current
+      activeCallIdRef.current = null
+      if (callId) apiEndCall(callId, true).catch(() => undefined)
       abortRef.current?.abort()
       handleRef.current?.disconnect().catch(() => undefined)
       handleRef.current = null
@@ -307,9 +341,12 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
   // Two fast clicks would otherwise race two setMicrophoneEnabled calls.
   const micBusyRef = useRef(false)
 
+  const micAllowed = roomParticipants.find((p) => p.isLocal)?.micAllowed ?? true
+
   const toggleMic = useCallback(async () => {
     const handle = handleRef.current
     if (!handle || micBusyRef.current) return
+    if (!micAllowed && !micEnabled) throw new Error(MODERATOR_MUTED_MESSAGE)
     micBusyRef.current = true
     try {
       await handle.setMicEnabled(!micEnabled)
@@ -318,7 +355,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
     } finally {
       micBusyRef.current = false
     }
-  }, [micEnabled])
+  }, [micEnabled, micAllowed])
 
   const camEnabled = roomParticipants.find((p) => p.isLocal)?.camEnabled ?? false
   const cameraBusyRef = useRef(false)
@@ -356,6 +393,191 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
     }
   }, [screenSharing])
 
+  // ── HU-50: private 1-on-1 calls ──────────────────────────────────────────
+  const [call, setCall] = useState<CallState | null>(null)
+  const [callStatus, setCallStatus] = useState<CallStatus>("idle")
+  const callBusyRef = useRef(false)
+
+  const resetCall = useCallback(() => {
+    setCall(null)
+    setCallStatus("idle")
+  }, [])
+
+  // Start a call to another user.
+  const startCall = useCallback(async (calleeId: string) => {
+    if (callBusyRef.current || status !== "idle" || callStatus !== "idle") return
+    callBusyRef.current = true
+    try {
+      const res = await initiateCall(calleeId, user?.name)
+      setCall({ id: res.call_id, peerId: calleeId, direction: "outgoing" })
+      setCallStatus("ringing")
+    } catch (err) {
+      throw new Error(friendlyError(err))
+    } finally {
+      callBusyRef.current = false
+    }
+  }, [status, callStatus, user?.name])
+
+  // Accept an incoming call (callee side).
+  const acceptIncomingCall = useCallback(async () => {
+    if (!call || callStatus !== "ringing" || call.direction !== "incoming") return
+    if (callBusyRef.current) return
+    callBusyRef.current = true
+    try {
+      setCallStatus("connecting")
+      const access = await apiAcceptCall(call.id)
+
+      const abort = new AbortController()
+      abortRef.current = abort
+      const attempt = ++attemptRef.current
+
+      const handle = await connectVoiceRoom(access.url, access.token, {
+        signal: abort.signal,
+        onParticipants: (list) => {
+          if (attemptRef.current === attempt) setRoomParticipants(list)
+        },
+        onDropped: () => {
+          if (attemptRef.current !== attempt) return
+          reset()
+          resetCall()
+          setDropNotice("La llamada se desconectó.")
+        },
+      })
+
+      if (attemptRef.current !== attempt) {
+        await handle.disconnect()
+        return
+      }
+      handleRef.current = handle
+      setStatus("connected")
+      setCallStatus("connected")
+    } catch (err) {
+      if (err instanceof VoiceAbortedError) return
+      resetCall()
+      reset()
+      throw new Error(friendlyError(err))
+    } finally {
+      callBusyRef.current = false
+      if (abortRef.current) abortRef.current = null
+    }
+  }, [call, callStatus, reset, resetCall])
+
+  // Reject or cancel a ringing call.
+  const rejectIncomingCall = useCallback(async () => {
+    if (!call || callStatus !== "ringing") return
+    try {
+      await apiRejectCall(call.id)
+    } catch {
+      // Best effort: the backend may have already timed it out.
+    }
+    resetCall()
+  }, [call, callStatus, resetCall])
+
+  // Hang up an active call.
+  const endCurrentCall = useCallback(async () => {
+    if (!call) return
+    try {
+      await apiEndCall(call.id)
+    } catch {
+      // Best effort.
+    }
+    const handle = handleRef.current
+    handleRef.current = null
+    if (handle) await handle.disconnect()
+    reset()
+    resetCall()
+  }, [call, reset, resetCall])
+
+  // Handle call signaling messages from the voice WebSocket.
+  const handleCallMessage = useCallback((msg: CallSignalingMessage) => {
+    switch (msg.type) {
+      case "call.incoming":
+        // Ignore if already in voice or in a call.
+        if (status !== "idle" || callStatus !== "idle") return
+        setCall({ id: msg.call_id, peerId: msg.caller_id, peerName: msg.peer_name, direction: "incoming" })
+        setCallStatus("ringing")
+        break
+
+      case "call.accepted": {
+        // Caller side: the callee accepted, connect to LiveKit.
+        if (!call || call.id !== msg.call_id || call.direction !== "outgoing") return
+        setCallStatus("connecting")
+        const attempt = ++attemptRef.current
+        const abort = new AbortController()
+        abortRef.current = abort
+        connectVoiceRoom(msg.url, msg.token, {
+          signal: abort.signal,
+          onParticipants: (list) => {
+            if (attemptRef.current === attempt) setRoomParticipants(list)
+          },
+          onDropped: () => {
+            if (attemptRef.current !== attempt) return
+            reset()
+            resetCall()
+            setDropNotice("La llamada se desconectó.")
+          },
+        }).then((handle) => {
+          if (attemptRef.current !== attempt) {
+            handle.disconnect()
+            return
+          }
+          handleRef.current = handle
+          setStatus("connected")
+          setCallStatus("connected")
+        }).catch((err) => {
+          if (err instanceof VoiceAbortedError || attemptRef.current !== attempt) return
+          reset()
+          resetCall()
+        }).finally(() => {
+          if (abortRef.current === abort) abortRef.current = null
+        })
+        break
+      }
+
+      case "call.rejected":
+      case "call.missed":
+        if (call?.id === msg.call_id) resetCall()
+        break
+
+      case "call.ended":
+        if (call?.id === msg.call_id) {
+          const handle = handleRef.current
+          handleRef.current = null
+          handle?.disconnect()
+          reset()
+          resetCall()
+        }
+        break
+    }
+  }, [call, callStatus, status, reset, resetCall])
+
+  useCallSignaling(!!user, handleCallMessage)
+
+  useEffect(() => {
+    activeCallIdRef.current = call && callStatus !== "idle" ? call.id : null
+  }, [call, callStatus])
+
+  const endCurrentCallRef = useRef(endCurrentCall)
+  endCurrentCallRef.current = endCurrentCall
+  const peerInRoom = roomParticipants.some((p) => !p.isLocal)
+  useEffect(() => {
+    if (callStatus !== "connected" || peerInRoom) return
+    const timer = setTimeout(() => {
+      endCurrentCallRef.current().then(() => setDropNotice(PEER_LEFT_MESSAGE))
+    }, PEER_LEFT_GRACE_MS)
+    return () => clearTimeout(timer)
+  }, [callStatus, peerInRoom])
+
+  // Resolve peer name for calls.
+  useEffect(() => {
+    if (!call || call.peerName) return
+    getUsersBatch([call.peerId])
+      .then(([peer]) => {
+        if (peer) setCall((prev) => prev && prev.id === call.id ? { ...prev, peerName: peer.name } : prev)
+      })
+      .catch(() => undefined)
+  }, [call])
+
   return (
     <VoiceContext.Provider
       value={{
@@ -368,6 +590,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
         join,
         leave,
         micEnabled,
+        micAllowed,
         toggleMic,
         camEnabled,
         cameraError,
@@ -377,6 +600,12 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
         screenShareError,
         toggleScreenShare,
         toggleLocalMute,
+        call,
+        callStatus,
+        startCall,
+        acceptIncomingCall,
+        rejectIncomingCall,
+        endCurrentCall,
       }}
     >
       {children}

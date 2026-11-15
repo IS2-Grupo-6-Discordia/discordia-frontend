@@ -15,6 +15,10 @@ interface AuditLogListProps {
 const FILTERS: { value: AuditGroup | null; label: string }[] = [
   { value: null, label: "Todo" },
   { value: "bans", label: "Baneos" },
+  { value: "kicks", label: "Expulsiones" },
+  { value: "mutes", label: "Silencios" },
+  { value: "messages", label: "Mensajes" },
+  { value: "words", label: "Palabras" },
   { value: "reports", label: "Reportes" },
   { value: "staff", label: "Staff" },
 ]
@@ -22,6 +26,12 @@ const FILTERS: { value: AuditGroup | null; label: string }[] = [
 const ACTIONS: Record<AuditAction, { icon: ComponentProps<typeof Ionicons>["name"]; color: string; verb: string }> = {
   member_banned: { icon: "ban-outline", color: "#FF7F72", verb: "baneó a" },
   member_unbanned: { icon: "lock-open-outline", color: "#4FD69C", verb: "levantó el baneo de" },
+  member_kicked: { icon: "exit-outline", color: "#FF9E94", verb: "expulsó a" },
+  member_muted: { icon: "mic-off-outline", color: "#F0C24B", verb: "silenció a" },
+  member_unmuted: { icon: "mic-outline", color: "#4FD69C", verb: "levantó el silencio de" },
+  message_deleted: { icon: "trash-outline", color: "#FF7F72", verb: "borró un mensaje de" },
+  banned_word_added: { icon: "text-outline", color: "#F0C24B", verb: "prohibió una palabra" },
+  banned_word_removed: { icon: "text-outline", color: "#4FD69C", verb: "volvió a permitir una palabra" },
   report_reviewed: { icon: "checkmark-done-outline", color: "#37D6C0", verb: "revisó un reporte sobre" },
   report_dismissed: { icon: "close-circle-outline", color: "#8DA8AC", verb: "descartó un reporte sobre" },
   server_suspended: { icon: "pause-circle-outline", color: "#F0C24B", verb: "suspendió el servidor" },
@@ -35,6 +45,8 @@ function formatDate(iso: string): string {
 
 function detailText(entry: AuditEntry): string | null {
   if (!entry.detail) return null
+  if (entry.action === "message_deleted") return `“${entry.detail}”`
+  if (entry.action === "banned_word_added" || entry.action === "banned_word_removed") return `“${entry.detail}”`
   if (entry.action === "report_reviewed" || entry.action === "report_dismissed")
     return `Motivo del reporte: ${REPORT_REASONS.find((r) => r.value === entry.detail)?.label ?? entry.detail}`
   return `Motivo: ${entry.detail}`

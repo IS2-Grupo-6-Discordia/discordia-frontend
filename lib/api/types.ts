@@ -9,6 +9,8 @@ export interface User {
   avatar: string
   avatarUrl?: string | null
   bio?: string | null
+  // HU-5 de perfil: texto corto (hasta 64) junto al nombre. null = sin estado.
+  customStatus?: string | null
   status?: UserStatus
   createdAt?: string
   hasPassword?: boolean
@@ -24,8 +26,10 @@ export interface PublicUser {
   id: string
   name: string
   bio?: string | null
+  customStatus?: string | null
   avatarUrl?: string | null
   status: PresenceStatus
+  createdAt?: string | null
 }
 
 export interface AuthResponse {
@@ -70,6 +74,7 @@ export interface ServerMember {
   avatar: string
   avatarUrl: string | null
   status: PresenceStatus
+  customStatus: string | null
   joinedAt: string
 }
 
@@ -101,6 +106,25 @@ export interface ServerBan {
 export interface MyServerPermissions {
   isOwner: boolean
   permissions: string[]
+  // HU-60: ISO date when a moderator's mute on the caller ends, or null.
+  mutedUntil: string | null
+}
+
+// HU-60: whether `mutedUntil` is still in the future at `now`.
+export function isMutedAt(mutedUntil: string | null | undefined, now: number = Date.now()): boolean {
+  if (!mutedUntil) return false
+  const end = Date.parse(mutedUntil)
+  return Number.isFinite(end) && end > now
+}
+
+// HU-60: the end of a mute as the user reads it, e.g. "21:10" today or
+// "12/11 21:10" another day.
+export function formatMuteEnd(mutedUntil: string, now: Date = new Date()): string {
+  const end = new Date(mutedUntil)
+  const time = end.toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" })
+  if (end.toDateString() === now.toDateString()) return time
+  const day = end.toLocaleDateString("es-AR", { day: "2-digit", month: "2-digit" })
+  return `${day} ${time}`
 }
 
 export function hasServerPermission(perms: MyServerPermissions | null, name: string): boolean {
@@ -115,6 +139,9 @@ export interface MyChannelPermissions {
   isOwner: boolean
   permissions: string[]
   canSend: boolean
+  canMentionEveryone: boolean
+  // HU-5 de mensajería: puede eliminar mensajes de otros miembros en este canal.
+  canManageMessages: boolean
 }
 
 export type TransferStatus = "pending" | "accepted" | "rejected" | "cancelled"
@@ -162,8 +189,10 @@ export interface Member {
   id: string
   name: string
   avatar: string
+  avatarUrl?: string | null
   color: string
   status: PresenceStatus
+  customStatus?: string | null
 }
 
 export interface RoleGroup {
@@ -185,6 +214,10 @@ export interface Message {
   // messages don't carry it.
   createdAt?: string
   text: string
+  // Ids de los usuarios mencionados (incluye a los miembros de un rol mencionado) y si el mensaje
+  // menciona a @everyone. El cliente resalta los mensajes que mencionan al usuario actual.
+  mentionedUserIds?: string[]
+  mentionsEveryone?: boolean
   edited?: boolean
   system?: boolean
   role?: string
@@ -214,9 +247,52 @@ export interface UnreadCounts {
   unread: number
   mentions: number
   serverId?: string
+  muted?: boolean
+}
+
+export interface MuteState {
+  servers: Record<string, true>
+  channels: Record<string, true>
 }
 
 export interface UnreadSummary {
   channels: Record<string, UnreadCounts>
   servers: Record<string, UnreadCounts>
 }
+
+// HU-50: private 1-on-1 call signaling messages from the voice realtime WebSocket.
+export interface CallIncoming {
+  type: "call.incoming"
+  call_id: string
+  caller_id: string
+  peer_name?: string
+}
+
+export interface CallAccepted {
+  type: "call.accepted"
+  call_id: string
+  url: string
+  token: string
+}
+
+export interface CallRejected {
+  type: "call.rejected"
+  call_id: string
+}
+
+export interface CallEnded {
+  type: "call.ended"
+  call_id: string
+}
+
+export interface CallMissed {
+  type: "call.missed"
+  call_id: string
+}
+
+export type CallSignalingMessage =
+  | CallIncoming
+  | CallAccepted
+  | CallRejected
+  | CallEnded
+  | CallMissed

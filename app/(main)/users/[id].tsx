@@ -8,13 +8,15 @@ import {
   ActivityIndicator,
   Image,
 } from "react-native"
-import { useLocalSearchParams, useRouter } from "expo-router"
+import { Redirect, useLocalSearchParams, useRouter } from "expo-router"
 import { Ionicons } from "@expo/vector-icons"
 import { useAuth } from "@/context/AuthContext"
+import { useVoice } from "@/context/VoiceContext"
 import { getUserById } from "@/lib/api/auth"
 import { getCommonServers } from "@/lib/api/servers"
 import { ApiError, friendlyError } from "@/lib/api/client"
 import Avatar from "@/components/Avatar"
+import PressableScale from "@/components/PressableScale"
 import { PresenceDot, STATUS_LABELS } from "@/components/StatusDot"
 import type { PublicUser, Server } from "@/lib/api/types"
 
@@ -42,6 +44,13 @@ function InfoRow({ label, value, muted }: { label: string; value: string; muted?
   )
 }
 
+function memberSince(iso?: string | null): string | null {
+  if (!iso) return null
+  const date = new Date(iso)
+  if (isNaN(date.getTime())) return null
+  return date.toLocaleDateString("es-AR", { year: "numeric", month: "long", day: "numeric" })
+}
+
 // Initials for the fallback avatar: first letter of up to 2 words.
 function initialsFor(name: string): string {
   const letters = name
@@ -60,9 +69,12 @@ export default function PublicProfileScreen() {
 
   const [profile, setProfile] = useState<PublicUser | null>(null)
   const [commonServers, setCommonServers] = useState<Server[]>([])
+  const voice = useVoice()
   const [loading, setLoading] = useState(true)
   const [notFound, setNotFound] = useState(false)
   const [loadError, setLoadError] = useState("")
+  const [callError, setCallError] = useState("")
+  const [calling, setCalling] = useState(false)
 
   const goBack = () => {
     if (router.canGoBack()) router.back()
@@ -71,10 +83,7 @@ export default function PublicProfileScreen() {
 
   useEffect(() => {
     // Viewing your own id -> send to the editable profile screen instead.
-    if (id && user?.id && id === user.id) {
-      router.replace("/profile")
-      return
-    }
+    if (id && user?.id && id === user.id) return
 
     let active = true
     setLoading(true)
@@ -122,6 +131,8 @@ export default function PublicProfileScreen() {
       clearInterval(timer)
     }
   }, [id, notFound, user?.id])
+
+  if (id && user?.id && id === user.id) return <Redirect href="/(main)/profile" />
 
   return (
     <View style={{ flex: 1, backgroundColor: "#0A1620" }}>
@@ -220,6 +231,15 @@ export default function PublicProfileScreen() {
                     <PresenceDot status={profile.status} size={10} ringColor={CARD_BG} />
                     <Text style={{ color: "#8DA8AC", fontSize: 13 }}>{STATUS_LABELS[profile.status]}</Text>
                   </View>
+                  {/* HU-5 de perfil: sin estado personalizado no se muestra nada (CA2). */}
+                  {profile.customStatus ? (
+                    <Text
+                      style={{ color: "#C9DEDF", fontSize: 13, marginTop: 6, textAlign: "center" }}
+                      accessibilityLabel={`Estado: ${profile.customStatus}`}
+                    >
+                      {profile.customStatus}
+                    </Text>
+                  ) : null}
                 </View>
 
                 <View style={{ height: 1, backgroundColor: "rgba(255,255,255,0.08)", marginBottom: 18 }} />
@@ -229,6 +249,10 @@ export default function PublicProfileScreen() {
                   value={profile.bio ? profile.bio : "Sin descripción"}
                   muted={!profile.bio}
                 />
+
+                {memberSince(profile.createdAt) ? (
+                  <InfoRow label="Miembro desde" value={memberSince(profile.createdAt)!} muted />
+                ) : null}
 
                 <View>
                   <Text style={labelStyle}>
@@ -284,6 +308,49 @@ export default function PublicProfileScreen() {
                     </View>
                   )}
                 </View>
+
+                {/* HU-50: Call button — visible when they share servers */}
+                {commonServers.length > 0 && voice.supported ? (
+                  <View style={{ marginTop: 20 }}>
+                    {callError ? (
+                      <Text style={{ color: "#FF9E94", fontSize: 12, textAlign: "center", marginBottom: 8 }}>
+                        {callError}
+                      </Text>
+                    ) : null}
+                    <PressableScale
+                      onPress={async () => {
+                        setCallError("")
+                        setCalling(true)
+                        try {
+                          await voice.startCall(String(id))
+                          router.push("/(main)/voice")
+                        } catch (err) {
+                          setCallError(err instanceof Error ? err.message : "No pudimos iniciar la llamada.")
+                        } finally {
+                          setCalling(false)
+                        }
+                      }}
+                      disabled={calling || voice.status !== "idle" || voice.callStatus !== "idle"}
+                      accessibilityLabel={`Llamar a ${profile.name}`}
+                      hoverStyle={{ backgroundColor: "#2BC4AF" }}
+                      style={{
+                        flexDirection: "row",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        gap: 8,
+                        paddingVertical: 12,
+                        borderRadius: 12,
+                        backgroundColor: "#37D6C0",
+                        opacity: calling || voice.status !== "idle" || voice.callStatus !== "idle" ? 0.5 : 1,
+                      }}
+                    >
+                      <Ionicons name="call" size={18} color="#04211D" />
+                      <Text style={{ color: "#04211D", fontWeight: "700", fontSize: 14 }}>
+                        {calling ? "Llamando..." : "Llamar"}
+                      </Text>
+                    </PressableScale>
+                  </View>
+                ) : null}
               </>
             )}
           </View>

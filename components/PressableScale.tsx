@@ -1,9 +1,11 @@
 import type { ReactNode } from "react"
 import { Pressable, Platform } from "react-native"
-import type { StyleProp, ViewStyle } from "react-native"
+import type { GestureResponderEvent, StyleProp, ViewStyle } from "react-native"
 
 interface PressableScaleProps {
   onPress?: () => void
+  onLongPress?: (event: GestureResponderEvent) => void
+  onContextMenu?: (event: any) => void
   disabled?: boolean
   accessibilityLabel?: string
   hitSlop?: number | { top?: number; bottom?: number; left?: number; right?: number }
@@ -30,6 +32,8 @@ const TRANSITION =
 // and (on web) a hover state. This is what gives buttons and rows "life".
 export default function PressableScale({
   onPress,
+  onLongPress,
+  onContextMenu,
   disabled,
   accessibilityLabel,
   hitSlop,
@@ -41,6 +45,8 @@ export default function PressableScale({
   return (
     <Pressable
       onPress={onPress}
+      onLongPress={onLongPress}
+      {...(onContextMenu ? ({ onContextMenu } as object) : {})}
       disabled={disabled}
       accessibilityLabel={accessibilityLabel}
       hitSlop={hitSlop}

@@ -5,6 +5,8 @@ import UserMenu from "@/components/UserMenu"
 import SessionSplash from "@/components/SessionSplash"
 import { useWakeState } from "@/lib/api/wake"
 import { VoiceProvider } from "@/context/VoiceContext"
+import IncomingCallModal from "@/components/IncomingCallModal"
+import ActiveCallBar from "@/components/ActiveCallBar"
 
 
 export default function MainLayout() {
@@ -31,6 +33,8 @@ export default function MainLayout() {
 
   return (
     <VoiceProvider>
+      <IncomingCallModal />
+      <View style={{ flex: 1 }}>
       <Tabs
         screenOptions={{
           headerStyle: {
@@ -85,12 +89,6 @@ export default function MainLayout() {
           }}
         />
         <Tabs.Screen
-          name="backoffice"
-          options={{
-            title: "Backoffice",
-          }}
-        />
-        <Tabs.Screen
           name="account"
           options={{ href: null, title: "Mi cuenta" }}
         />
@@ -103,6 +101,8 @@ export default function MainLayout() {
           options={{ href: null, title: "Perfil" }}
         />
       </Tabs>
+      <ActiveCallBar />
+      </View>
     </VoiceProvider>
   )
 }

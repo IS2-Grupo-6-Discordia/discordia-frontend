@@ -16,7 +16,11 @@ export interface BackendMessage {
   author_id: string
   content: string
   mentions: string[]
+  role_mentions?: string[]
+  mention_everyone?: boolean
   created_at: string
+  // HU-4: cuándo se editó por última vez; null/ausente si nunca se editó.
+  edited_at?: string | null
 }
 
 const AUTHOR_COLORS = ["#37D6C0", "#FF7F72", "#4FD69C", "#F0C24B", "#A093FF"]
@@ -39,6 +43,9 @@ export function toMessage(msg: BackendMessage, authorName: string): Message {
     }),
     createdAt: msg.created_at,
     text: msg.content,
+    mentionedUserIds: msg.mentions ?? [],
+    mentionsEveryone: msg.mention_everyone === true,
+    edited: !!msg.edited_at,
   }
 }
 
@@ -199,6 +206,8 @@ export async function getMessagesRealtimeTicket(): Promise<RealtimeTicket> {
 export interface SendMessageOptions {
   serverId?: string
   mentions?: string[]
+  roleMentions?: string[]
+  mentionEveryone?: boolean
 }
 
 export async function sendMessage(
@@ -215,6 +224,8 @@ export async function sendMessage(
         server_id: options.serverId,
         content: text,
         mentions: options.mentions ?? [],
+        role_mentions: options.roleMentions ?? [],
+        mention_everyone: options.mentionEveryone ?? false,
       }),
     })
     return toMessage(res, authorName || "Yo")
@@ -227,4 +238,21 @@ export async function sendMessage(
     time: new Date().toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" }),
     text,
   }
+}
+
+// HU-4: edita el contenido de un mensaje propio. El backend solo deja al autor (403 si no) y lo
+// marca como editado; al resto le llega en vivo como `messages.updated`.
+export async function editMessage(channelId: string, messageId: string, text: string): Promise<Message> {
+  const res = await api<BackendMessage>(`/channels/${channelId}/messages/${messageId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ content: text }),
+  })
+  const [converted] = await hydrateAuthors([res])
+  return converted
+}
+
+// HU-5: elimina un mensaje. El autor siempre puede; los demás necesitan `manage_messages`
+// (403 si no). Al resto le llega en vivo como `messages.deleted`.
+export async function deleteMessage(channelId: string, messageId: string): Promise<void> {
+  await api<void>(`/channels/${channelId}/messages/${messageId}`, { method: "DELETE" })
 }

@@ -31,6 +31,11 @@ export const MANAGE_ROLES_PERMISSION = "manage_roles"
 // whether to show the "Invitar" action.
 export const CREATE_INVITE_PERMISSION = "create_invite"
 
+export const MENTION_EVERYONE_PERMISSION = "mention_everyone"
+
+// HU-5 de mensajería: borrar mensajes ajenos en los canales de texto.
+export const MANAGE_MESSAGES_PERMISSION = "manage_messages"
+
 // The backend's "manage channels" permission string. A member who holds it (or
 // ADMINISTRATOR, or being the owner) may manage channels and categories.
 export const MANAGE_CHANNELS_PERMISSION = "manage_channels"
@@ -539,6 +544,7 @@ async function toServerMembers(rows: BackendServerMember[]): Promise<ServerMembe
       avatar: abbrFor(name),
       avatarUrl: profile?.avatarUrl ?? null,
       status: profile?.status ?? "offline",
+      customStatus: profile?.customStatus ?? null,
       joinedAt: row.joined_at,
     }
   })
@@ -1047,6 +1053,7 @@ interface BackendMyPermissions {
   server_id: string
   is_owner: boolean
   permissions: string[]
+  muted_until?: string | null
 }
 
 // The caller's effective permissions in a server, to show only the actions
@@ -1054,11 +1061,11 @@ interface BackendMyPermissions {
 export async function getMyServerPermissions(serverId: string): Promise<MyServerPermissions> {
   if (WRITE_USE_MOCK) {
     await mockDelay(300)
-    return { isOwner: true, permissions: [] }
+    return { isOwner: true, permissions: [], mutedUntil: null }
   }
 
   const res = await api<BackendMyPermissions>(`/servers/${serverId}/members/me/permissions`)
-  return { isOwner: res.is_owner, permissions: res.permissions }
+  return { isOwner: res.is_owner, permissions: res.permissions, mutedUntil: res.muted_until ?? null }
 }
 
 interface BackendMyChannelPermissions {
@@ -1080,13 +1087,25 @@ export async function getMyChannelPermissions(
 ): Promise<MyChannelPermissions> {
   if (WRITE_USE_MOCK) {
     await mockDelay(300)
-    return { isOwner: true, permissions: [], canSend: true }
+    return { isOwner: true, permissions: [], canSend: true, canMentionEveryone: true, canManageMessages: true }
   }
 
   const res = await api<BackendMyChannelPermissions>(
     `/servers/${serverId}/channels/${channelId}/members/me/permissions`,
   )
-  return { isOwner: res.is_owner, permissions: res.permissions, canSend: res.can_send }
+  return {
+    isOwner: res.is_owner,
+    permissions: res.permissions,
+    canSend: res.can_send,
+    canMentionEveryone:
+      res.is_owner ||
+      res.permissions.includes(ADMIN_PERMISSION) ||
+      res.permissions.includes(MENTION_EVERYONE_PERMISSION),
+    canManageMessages:
+      res.is_owner ||
+      res.permissions.includes(ADMIN_PERMISSION) ||
+      res.permissions.includes(MANAGE_MESSAGES_PERMISSION),
+  }
 }
 
 // HU-25: ban a user. Banning someone already banned is idempotent (200 with the
@@ -1141,6 +1160,140 @@ export async function unbanMember(serverId: string, userId: string): Promise<voi
   }
 
   await api<void>(`/servers/${serverId}/bans/${userId}`, { method: "DELETE" })
+}
+
+// HU-59: kick a member. Unlike a ban, nothing is recorded: they can rejoin with a
+// new invite. Requires KICK_MEMBERS and outranking the target (checked server-side).
+export async function kickMember(serverId: string, userId: string): Promise<void> {
+  if (WRITE_USE_MOCK) {
+    await mockDelay()
+    return
+  }
+
+  await api<void>(`/servers/${serverId}/members/${userId}`, { method: "DELETE" })
+}
+
+// ---- Moderation: temporary mutes (HU-60) -------------------------------------
+
+export const MODERATE_MEMBERS_PERMISSION = "moderate_members"
+
+// Durations offered when muting, in seconds. The backend accepts 60 s to 28 days.
+export const MUTE_DURATIONS: { label: string; seconds: number }[] = [
+  { label: "1 minuto", seconds: 60 },
+  { label: "5 minutos", seconds: 5 * 60 },
+  { label: "10 minutos", seconds: 10 * 60 },
+  { label: "1 hora", seconds: 60 * 60 },
+  { label: "1 día", seconds: 24 * 60 * 60 },
+  { label: "1 semana", seconds: 7 * 24 * 60 * 60 },
+]
+
+interface BackendMute {
+  user_id: string
+  muted_by: string
+  reason: string | null
+  created_at: string
+  expires_at: string
+}
+
+// HU-60: mute a member for `seconds`. Muting someone already muted replaces the
+// duration. Requires MODERATE_MEMBERS and outranking the target (server-side).
+export async function muteMember(
+  serverId: string,
+  userId: string,
+  seconds: number,
+  reason: string,
+): Promise<void> {
+  if (WRITE_USE_MOCK) {
+    await mockDelay()
+    return
+  }
+
+  const trimmed = reason.trim()
+  await api<BackendMute>(`/servers/${serverId}/members/${userId}/mute`, {
+    method: "PUT",
+    body: JSON.stringify({ duration_seconds: seconds, reason: trimmed ? trimmed : null }),
+  })
+}
+
+// HU-60 CA3: lift a mute before it ends.
+export async function unmuteMember(serverId: string, userId: string): Promise<void> {
+  if (WRITE_USE_MOCK) {
+    await mockDelay()
+    return
+  }
+
+  await api<void>(`/servers/${serverId}/members/${userId}/mute`, { method: "DELETE" })
+}
+
+// HU-60: active mutes, as user id -> ISO end. Only moderators may list them.
+export async function listMutes(serverId: string): Promise<Record<string, string>> {
+  if (WRITE_USE_MOCK) {
+    await mockDelay(300)
+    return {}
+  }
+
+  const rows = await api<BackendMute[]>(`/servers/${serverId}/mutes`)
+  return Object.fromEntries(rows.map((row) => [row.user_id, row.expires_at]))
+}
+
+// ---- Moderation: banned words (HU-63) ----------------------------------------
+
+// Mirrored from microservicio-servidores: one word of up to 50 characters, at
+// most 100 per server. The backend stores them lowercase and without accents,
+// and mensajes rejects (422) any message or edit that contains one.
+export const BANNED_WORD_MAX = 50
+export const BANNED_WORDS_MAX_PER_SERVER = 100
+
+export interface BannedWord {
+  word: string
+  createdBy: string
+  createdAt: string
+}
+
+interface BackendBannedWord {
+  word: string
+  created_by: string
+  created_at: string
+}
+
+function toBannedWord(row: BackendBannedWord): BannedWord {
+  return { word: row.word, createdBy: row.created_by, createdAt: row.created_at }
+}
+
+// HU-63: the server's list, alphabetically. Requires MODERATE_MEMBERS.
+export async function listBannedWords(serverId: string): Promise<BannedWord[]> {
+  if (WRITE_USE_MOCK) {
+    await mockDelay(300)
+    return []
+  }
+
+  const rows = await api<BackendBannedWord[]>(`/servers/${serverId}/banned-words`)
+  return rows.map(toBannedWord)
+}
+
+// HU-63: add a word. Adding one that's already there (in any case or accents)
+// is a no-op that returns the stored one.
+export async function addBannedWord(serverId: string, word: string): Promise<BannedWord> {
+  if (WRITE_USE_MOCK) {
+    await mockDelay()
+    return { word: word.trim().toLowerCase(), createdBy: "", createdAt: new Date().toISOString() }
+  }
+
+  const row = await api<BackendBannedWord>(
+    `/servers/${serverId}/banned-words/${encodeURIComponent(word.trim())}`,
+    { method: "PUT" },
+  )
+  return toBannedWord(row)
+}
+
+// HU-63: remove a word from the list.
+export async function removeBannedWord(serverId: string, word: string): Promise<void> {
+  if (WRITE_USE_MOCK) {
+    await mockDelay()
+    return
+  }
+
+  await api<void>(`/servers/${serverId}/banned-words/${encodeURIComponent(word)}`, { method: "DELETE" })
 }
 
 // ---- HU-4: categories --------------------------------------------------------

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react"
+import { useState, useEffect, useRef, useCallback, useMemo } from "react"
 import {
   View,
   Text,
@@ -11,6 +11,7 @@ import {
   Keyboard,
   ActivityIndicator,
   Image,
+  Modal,
   useWindowDimensions,
 } from "react-native"
 import type { ViewStyle, TextStyle } from "react-native"
@@ -23,6 +24,8 @@ import {
   getServerMembers,
   getMessages,
   sendMessage,
+  editMessage,
+  deleteMessage,
   createServer,
   createInvite,
   listInvites,
@@ -63,14 +66,33 @@ import {
   CREATE_INVITE_PERMISSION,
   getMyServerPermissions,
   banMember,
+  kickMember,
+  muteMember,
+  unmuteMember,
+  listMutes,
+  MODERATE_MEMBERS_PERMISSION,
+  MUTE_DURATIONS,
   listBans,
   unbanMember,
   getUnreadSummary,
   markChannelRead,
+  markAllRead,
   withoutChannel,
+  withoutServer,
+  getMutes,
+  setChannelMuted,
+  setServerMuted,
+  withMute,
+  EMPTY_MUTES,
   extractMentionIds,
+  extractRoleMentionIds,
+  hasEveryoneMention,
+  findMentionQuery,
+  filterMentionSuggestions,
+  applyMentionSuggestion,
   EMPTY_UNREAD,
 } from "@/lib/api"
+import type { MentionSuggestion, MentionRole } from "@/lib/api/mentions"
 import type {
   Server,
   Category,
@@ -85,8 +107,9 @@ import type {
   ServerBan,
   MyServerPermissions,
   UnreadSummary,
+  MuteState,
 } from "@/lib/api/types"
-import { hasServerPermission } from "@/lib/api/types"
+import { formatMuteEnd, hasServerPermission, isMutedAt } from "@/lib/api/types"
 import { ApiError, friendlyError } from "@/lib/api/client"
 import { useAuth } from "@/context/AuthContext"
 import { useVoice } from "@/context/VoiceContext"
@@ -102,6 +125,7 @@ import PressableScale from "@/components/PressableScale"
 import DeleteServerModal from "@/components/DeleteServerModal"
 import ReportModal from "@/components/ReportModal"
 import { getPendingReportCount, type ReportTarget } from "@/lib/api/reports"
+import ServerMetricsModal from "@/components/ServerMetricsModal"
 import ServerReportsModal from "@/components/ServerReportsModal"
 import ServerSettingsModal from "@/components/ServerSettingsModal"
 import RolesModal from "@/components/RolesModal"
@@ -207,8 +231,10 @@ function membersToRoleGroups(members: ServerMember[]): RoleGroup[] {
     id: m.userId,
     name: m.name,
     avatar: m.avatar,
+    avatarUrl: m.avatarUrl ?? null,
     color,
     status: m.status,
+    customStatus: m.customStatus,
   })
   const owners = members.filter((m) => m.role === "owner")
   const rest = members.filter((m) => m.role !== "owner")
@@ -280,6 +306,8 @@ const PRESENCE_REFRESH_MS = 15_000
 const UNREAD_REFRESH_MS = 8_000
 // CA4: máximo de caracteres de un mensaje. Único valor compartido; se cuenta por
 // code points sobre el texto trimeado, igual que el backend (MAX_MESSAGE_LENGTH).
+const MAX_ROLE_MENTIONS = 10
+const MENTION_FORBIDDEN_MESSAGE = "No tenés permiso para mencionar a todo el servidor o a roles."
 const MESSAGE_MAX = 4000
 // HU-6 CA1: page size for loading older history, matching useChannelMessages' PAGE_LIMIT.
 const HISTORY_PAGE = 50
@@ -337,7 +365,7 @@ export default function ChatScreen() {
   const [activeChannel, setActiveChannel] = useState("")
   const [showMembers, setShowMembers] = useState(false)
   const [input, setInput] = useState("")
-  const { width: windowWidth } = useWindowDimensions()
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions()
   const isNarrow = windowWidth < NARROW_BREAKPOINT
   // Phones only: which single pane is on screen.
   const [mobilePane, setMobilePane] = useState<"channels" | "chat">("channels")
@@ -347,16 +375,16 @@ export default function ChatScreen() {
   // Web-only hover tooltip for the server rail: shows the full server name next
   // to its icon, so long names stay discoverable even when the icon is just an
   // abbreviation or a photo.
-  const [tooltip, setTooltip] = useState<{ label: string; y: number } | null>(null)
+  const [tooltip, setTooltip] = useState<{ label: string; sub?: string; y: number } | null>(null)
   const [hoveredMember, setHoveredMember] = useState<string | null>(null)
   const [hoveredMessage, setHoveredMessage] = useState<string | null>(null)
 
-  const showTooltip = (label: string) => (e: any) => {
+  const showTooltip = (label: string, sub?: string) => (e: any) => {
     // Touch screens fire mouseenter on tap but never mouseleave: the tooltip
     // would stay stuck over the header, so phones don't get it.
     if (Platform.OS !== "web" || isNarrow) return
     const rect = e?.currentTarget?.getBoundingClientRect?.()
-    if (rect) setTooltip({ label, y: rect.top + rect.height / 2 })
+    if (rect) setTooltip({ label, sub, y: rect.top + rect.height / 2 })
   }
   const hideTooltip = () => setTooltip(null)
 
@@ -386,6 +414,14 @@ export default function ChatScreen() {
   const activeChannelRef = useRef(activeChannel)
   activeChannelRef.current = activeChannel
   const [unread, setUnread] = useState<UnreadSummary>(EMPTY_UNREAD)
+  // "Marcar todo como leído" también apaga los indicadores de demostración del servidor de
+  // ejemplo, que no vienen del backend. Mientras el pedido está en vuelo, el polling no pisa el
+  // resumen ya vaciado.
+  const [demoCleared, setDemoCleared] = useState(false)
+  const markingAllRef = useRef(false)
+  const [mutes, setMutes] = useState<MuteState>(EMPTY_MUTES)
+  const mutingRef = useRef(0)
+  const reloadUnreadRef = useRef<(() => void) | null>(null)
 
   // Add-server modal (HU-1 create / HU-3 join)
   const [addModalOpen, setAddModalOpen] = useState(false)
@@ -538,6 +574,31 @@ export default function ChatScreen() {
   // (todavía no se consultó, o la consulta falló por algo transitorio). En ese
   // caso NO se deshabilita el campo: el POST igual se valida en el backend.
   const [canSend, setCanSend] = useState<boolean | null>(null)
+  const [canMention, setCanMention] = useState<boolean | null>(null)
+  // HU-5: ¿puede borrar mensajes ajenos en el canal abierto? (manage_messages)
+  const [canManageMessages, setCanManageMessages] = useState(false)
+  // HU-4: edición en línea de un mensaje propio.
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null)
+  const [editDraft, setEditDraft] = useState("")
+  const [editBusy, setEditBusy] = useState(false)
+  const [editError, setEditError] = useState<string | null>(null)
+  // HU-5: confirmación de borrado y menú de acciones (long press en mobile).
+  const [deleteTarget, setDeleteTarget] = useState<Message | null>(null)
+  const [deleteBusy, setDeleteBusy] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
+  const [messageActionsTarget, setMessageActionsTarget] = useState<Message | null>(null)
+  const [mentionRoles, setMentionRoles] = useState<MentionRole[]>([])
+  const [suggestionIndex, setSuggestionIndex] = useState(0)
+  const messagesListRef = useRef<FlatList<Message>>(null)
+  const nearBottomRef = useRef(true)
+  const forceScrollRef = useRef(true)
+  const listContentHeightRef = useRef(0)
+  const listViewHeightRef = useRef(0)
+  const scrollMessagesToBottom = useCallback((animated = false) => {
+    const offset = Math.max(0, listContentHeightRef.current - listViewHeightRef.current)
+    messagesListRef.current?.scrollToOffset({ offset, animated })
+  }, [])
+  const [suggestionsDismissedFor, setSuggestionsDismissedFor] = useState("")
   // El canal cuya respuesta de permisos vale ahora: descarta respuestas que
   // llegan tarde de un canal anterior y evita deshabilitar el campo equivocado.
   const permsChannelRef = useRef("")
@@ -555,13 +616,34 @@ export default function ChatScreen() {
   const [pendingTransfer, setPendingTransfer] = useState<OwnershipTransfer | null>(null)
   const [transferActionBusy, setTransferActionBusy] = useState(false)
   const [bannerError, setBannerError] = useState("")
+  useEffect(() => {
+    if (!bannerError) return
+    const timer = setTimeout(() => setBannerError(""), 8000)
+    return () => clearTimeout(timer)
+  }, [bannerError])
 
-  // Moderation (HU-25 ban / HU-26 revoke). The caller's permissions in the
+  // Moderation (HU-25 ban / HU-26 revoke / HU-59 kick). The caller's permissions in the
   // active server decide which controls show up; the backend checks again.
   const [myPerms, setMyPerms] = useState<MyServerPermissions | null>(null)
   const [banTarget, setBanTarget] = useState<{ id: string; name: string } | null>(null)
+  const [kickTarget, setKickTarget] = useState<{ id: string; name: string } | null>(null)
+  const [kickBusy, setKickBusy] = useState(false)
+  const [kickError, setKickError] = useState("")
+  // HU-60: temporary mutes. `memberMutes` (user id -> ISO end) is only loaded for
+  // moderators, to offer "Levantar silencio" on the muted ones.
+  const [muteTarget, setMuteTarget] = useState<{ id: string; name: string } | null>(null)
+  const [muteSeconds, setMuteSeconds] = useState(MUTE_DURATIONS[2].seconds)
+  const [muteReason, setMuteReason] = useState("")
+  const [muteBusy, setMuteBusy] = useState(false)
+  const [muteError, setMuteError] = useState("")
+  const [memberMutes, setMemberMutes] = useState<Record<string, string>>({})
+  // Our own mute, from members/me/permissions or learnt from a 403 on send.
+  const [myMutedUntil, setMyMutedUntil] = useState<string | null>(null)
+  // Bumped when our mute ends, so the composer re-enables without a reload.
+  const [, setMuteClock] = useState(0)
   const [reportTarget, setReportTarget] = useState<ReportTarget | null>(null)
   const [serverReportsOpen, setServerReportsOpen] = useState(false)
+  const [serverMetricsOpen, setServerMetricsOpen] = useState(false)
   const [pendingReports, setPendingReports] = useState(0)
   const [banReason, setBanReason] = useState("")
   const [banBusy, setBanBusy] = useState(false)
@@ -571,7 +653,7 @@ export default function ChatScreen() {
   const [bansLoading, setBansLoading] = useState(false)
   const [bansError, setBansError] = useState("")
   const [unbanningId, setUnbanningId] = useState<string | null>(null)
-  // Shown when the user loses access to a server (banned, or it disappeared).
+  // Shown when the user loses access to a server (banned, kicked, or it disappeared).
   const [accessLostNotice, setAccessLostNotice] = useState("")
 
   useEffect(() => {
@@ -632,6 +714,25 @@ export default function ChatScreen() {
       .then((members) => setRoles(membersToRoleGroups(members)))
       .catch(() => setRoles([]))
   }, [activeServer, activeSuspended, setServerSuspended])
+
+  useEffect(() => {
+    setMentionRoles([])
+    if (!activeServer || !isRealServerId(activeServer) || activeSuspended) return
+    let active = true
+    const load = () => {
+      getServerRoles(activeServer)
+        .then((list) => {
+          if (active) setMentionRoles(list.map((r) => ({ id: r.id, name: r.name })))
+        })
+        .catch(() => {})
+    }
+    load()
+    const timer = setInterval(load, 60_000)
+    return () => {
+      active = false
+      clearInterval(timer)
+    }
+  }, [activeServer, activeSuspended])
 
   useEffect(() => {
     if (!activeServer || !isRealServerId(activeServer)) return
@@ -733,10 +834,47 @@ export default function ChatScreen() {
         const tb = b.createdAt ? Date.parse(b.createdAt) : 0
         return ta - tb
       })
-      const same = merged.length === prev.length && merged.every((m, i) => m.id === prev[i]?.id)
+      // An edit keeps the id, so the content and the "(editado)" mark are compared too.
+      const same =
+        merged.length === prev.length &&
+        merged.every(
+          (m, i) => m.id === prev[i]?.id && m.text === prev[i]?.text && !!m.edited === !!prev[i]?.edited,
+        )
       return same ? prev : merged
     })
   }, [])
+
+  // HU-5: a deleted message disappears for everyone (messages.deleted frame or own delete).
+  const removeMessages = useCallback((ids: string[]) => {
+    if (ids.length === 0) return
+    const gone = new Set(ids)
+    setMessages((prev) => (prev.some((m) => gone.has(m.id)) ? prev.filter((m) => !gone.has(m.id)) : prev))
+  }, [])
+
+  // The latest page (60 s reconcile / fallback poll) is authoritative for its
+  // time window: a loaded message inside it that the backend no longer returns
+  // was deleted while its messages.deleted frame was missed. Messages I just
+  // sent (sentIds) are kept, a page fetched before the POST may not have them.
+  const syncLatestPage = useCallback(
+    (batch: Message[], isWholeHistory: boolean) => {
+      const present = new Set(batch.map((m) => m.id))
+      const from = isWholeHistory
+        ? -Infinity
+        : Math.min(...batch.map((m) => (m.createdAt ? Date.parse(m.createdAt) : Infinity)))
+      const stale = messagesRef.current
+        .filter(
+          (m) =>
+            m.createdAt &&
+            Date.parse(m.createdAt) >= from &&
+            !present.has(m.id) &&
+            !sentIds.current.has(m.id),
+        )
+        .map((m) => m.id)
+      removeMessages(stale)
+      mergeMessages(batch)
+    },
+    [mergeMessages, removeMessages],
+  )
 
   // HU-6 CA1: fetch the page immediately older than the oldest loaded message and
   // merge it in. mergeMessages is union-by-id, so live/reconciled/recovered
@@ -829,31 +967,127 @@ export default function ChatScreen() {
   useEffect(() => {
     if (!realServerIds) {
       setUnread(EMPTY_UNREAD)
+      setMutes(EMPTY_MUTES)
       return
     }
     let active = true
-    const load = () =>
-      getUnreadSummary(realServerIds.split(","))
+    const loadMutes = () =>
+      getMutes(realServerIds.split(","))
+        .then((state) => {
+          if (active && mutingRef.current === 0) setMutes(state)
+        })
+        .catch(() => undefined)
+    const load = () => {
+      loadMutes()
+      return getUnreadSummary(realServerIds.split(","))
         .then((summary) => {
-          if (!active) return
+          if (!active || markingAllRef.current) return
           const channel = viewedRef.current
           setUnread(channel ? withoutChannel(summary, channel) : summary)
         })
         .catch(() => undefined)
+    }
+    reloadUnreadRef.current = () => {
+      load()
+    }
     load()
     const timer = setInterval(load, UNREAD_REFRESH_MS)
     return () => {
       active = false
+      reloadUnreadRef.current = null
       clearInterval(timer)
     }
   }, [realServerIds])
 
+  useEffect(() => {
+    forceScrollRef.current = true
+    nearBottomRef.current = true
+    const timer = setTimeout(() => {
+      forceScrollRef.current = false
+    }, 1500)
+    return () => clearTimeout(timer)
+  }, [activeChannel])
+
+  const [unreadMark, setUnreadMark] = useState<{ channelId: string; after: number; upTo: number } | null>(null)
+  const unreadMarkOpenedRef = useRef("")
+  const dividerScrolledRef = useRef("")
+  const dividerShownAtRef = useRef(0)
+  const dividerActiveRef = useRef(false)
+
   // Al abrir un canal (y cada vez que llega o se envía un mensaje mientras se mira), queda leído.
   useEffect(() => {
-    if (!viewedChannel) return
+    if (!viewedChannel) {
+      unreadMarkOpenedRef.current = ""
+      setUnreadMark(null)
+      return
+    }
     setUnread((prev) => withoutChannel(prev, viewedChannel))
-    markChannelRead(viewedChannel).catch(() => undefined)
+    const firstMarkOfVisit = unreadMarkOpenedRef.current !== viewedChannel
+    if (firstMarkOfVisit) {
+      unreadMarkOpenedRef.current = viewedChannel
+      dividerScrolledRef.current = ""
+      setUnreadMark(null)
+    }
+    markChannelRead(viewedChannel)
+      .then((mark) => {
+        if (!firstMarkOfVisit || unreadMarkOpenedRef.current !== viewedChannel) return
+        const after = mark.previousReadAt ? Date.parse(mark.previousReadAt) : NaN
+        const upTo = mark.lastReadAt ? Date.parse(mark.lastReadAt) : NaN
+        if (Number.isNaN(after) || Number.isNaN(upTo)) return
+        setUnreadMark({ channelId: viewedChannel, after, upTo })
+      })
+      .catch(() => undefined)
   }, [viewedChannel, messages.length])
+
+  // Dónde va la línea: sobre el primer mensaje de otro que llegó después de la última lectura y
+  // antes de abrir el canal, y cuántos son. Sin mensajes en ese rango no hay línea.
+  const avatarUrlById = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const group of roles) for (const m of group.members) if (m.avatarUrl) map.set(m.id, m.avatarUrl)
+    return map
+  }, [roles])
+
+  const unreadDivider = useMemo(() => {
+    if (!unreadMark || unreadMark.channelId !== viewedChannel) return null
+    let firstId = ""
+    let count = 0
+    for (const m of messages) {
+      if (!m.createdAt || m.authorId === user?.id || m.system) continue
+      const at = Date.parse(m.createdAt)
+      if (at > unreadMark.after && at <= unreadMark.upTo) {
+        if (!firstId) firstId = m.id
+        count += 1
+      }
+    }
+    return firstId ? { messageId: firstId, count } : null
+  }, [unreadMark, viewedChannel, messages, user?.id])
+
+  dividerActiveRef.current = unreadDivider !== null
+
+  useEffect(() => {
+    if (!unreadDivider) return
+    const key = `${viewedChannel}:${unreadDivider.messageId}`
+    if (dividerScrolledRef.current.startsWith(`${viewedChannel}:`)) return
+    const index = messages.findIndex((m) => m.id === unreadDivider.messageId)
+    if (index < 0) return
+    dividerScrolledRef.current = key
+    dividerShownAtRef.current = Date.now()
+    forceScrollRef.current = false
+    nearBottomRef.current = false
+    const go = () => {
+      try {
+        messagesListRef.current?.scrollToIndex({ index, viewPosition: 0.1, animated: false })
+      } catch {
+        // la lista todavía no midió ese mensaje: onScrollToIndexFailed lo reintenta
+      }
+    }
+    go()
+    const timer = setTimeout(go, 250)
+    return () => clearTimeout(timer)
+  }, [unreadDivider, viewedChannel, messages])
+  useEffect(() => {
+    if (!viewedChannel) dividerScrolledRef.current = ""
+  }, [viewedChannel])
 
   // Los mensajes nuevos del canal abierto llegan por el socket de tiempo real
   // (useChannelMessages, más abajo): entrega en vivo, reconciliación cada 60 s y
@@ -864,11 +1098,104 @@ export default function ChatScreen() {
   // ejemplo los valores de demostración que ya traía.
   const channelUnread = (ch: { id: string; unread?: boolean; mention?: number }) => {
     const u = unread.channels[ch.id]
-    return { unread: !!u || !!ch.unread, mentions: u ? u.mentions : (ch.mention ?? 0) }
+    const muted = !!mutes.channels[ch.id] || !!mutes.servers[activeServer]
+    if (demoCleared) return { unread: !!u, mentions: u && !muted ? u.mentions : 0, muted }
+    return {
+      unread: !!u || !!ch.unread,
+      mentions: muted ? 0 : u ? u.mentions : (ch.mention ?? 0),
+      muted,
+    }
   }
   const serverUnread = (s: Server) => {
     const u = unread.servers[s.id]
-    return { unread: !!u || !!s.unread || !!s.mention, mentions: u ? u.mentions : (s.mention ?? 0) }
+    const muted = !!mutes.servers[s.id] || !!u?.muted
+    if (demoCleared) return { unread: !!u, mentions: u && !muted ? u.mentions : 0, muted }
+    return {
+      unread: !!u || !!s.unread || !!s.mention,
+      mentions: muted ? 0 : u ? u.mentions : (s.mention ?? 0),
+      muted,
+    }
+  }
+  const hasAnyUnread = servers.some((s) => serverUnread(s).unread)
+
+  // HU-2 CA2: apaga todos los indicadores de no leído. Es optimista: se vacía el resumen al
+  // instante y, si el pedido falla, se restaura y se avisa.
+  const handleMarkAllRead = () => {
+    if (markingAllRef.current || !hasAnyUnread) return
+    const previous = unread
+    const previousDemoCleared = demoCleared
+    setUnread(EMPTY_UNREAD)
+    setDemoCleared(true)
+    if (!realServerIds) return
+    markingAllRef.current = true
+    markAllRead(realServerIds.split(","))
+      .catch((err) => {
+        setUnread(previous)
+        setDemoCleared(previousDemoCleared)
+        setBannerError(friendlyError(err))
+      })
+      .finally(() => {
+        markingAllRef.current = false
+      })
+  }
+  
+  type ContextMenu = { x: number; y: number; w: number; kind: "server" | "channel"; id: string; full?: boolean }
+  const [serverMenu, setServerMenu] = useState<ContextMenu | null>(null)
+  const serverNameRef = useRef<View>(null)
+  const openServerMenu = () => {
+    serverNameRef.current?.measureInWindow((x, y, w, h) =>
+      setServerMenu({ x, y: y + h + 4, w, kind: "server", id: activeServer, full: true }),
+    )
+  }
+  const openContextMenuAt = (event: any, kind: "server" | "channel", id: string) => {
+    event?.preventDefault?.()
+    const native = event?.nativeEvent ?? {}
+    const x = event?.clientX ?? native.pageX ?? native.locationX ?? 0
+    const y = event?.clientY ?? native.pageY ?? native.locationY ?? 0
+    setServerMenu({ x, y, w: 0, kind, id })
+  }
+  const closeServerMenu = () => setServerMenu(null)
+
+  const handleMarkServerRead = (serverId: string) => {
+    closeServerMenu()
+    if (markingAllRef.current || !unread.servers[serverId]) return
+    const previous = unread
+    setUnread((prev) => withoutServer(prev, serverId))
+    markingAllRef.current = true
+    markAllRead([serverId])
+      .catch((err) => {
+        setUnread(previous)
+        setBannerError(friendlyError(err))
+      })
+      .finally(() => {
+        markingAllRef.current = false
+      })
+  }
+  const handleMarkChannelRead = (channelId: string) => {
+    closeServerMenu()
+    if (!unread.channels[channelId]) return
+    const previous = unread
+    setUnread((prev) => withoutChannel(prev, channelId))
+    markChannelRead(channelId).catch((err) => {
+      setUnread(previous)
+      setBannerError(friendlyError(err))
+    })
+  }
+
+  const handleToggleMute = (kind: "server" | "channel", id: string, muted: boolean) => {
+    closeServerMenu()
+    setMutes((prev) => withMute(prev, kind, id, muted))
+    mutingRef.current += 1
+    const request = kind === "server" ? setServerMuted(id, muted) : setChannelMuted(id, muted)
+    request
+      .then(() => reloadUnreadRef.current?.())
+      .catch((err) => {
+        setMutes((prev) => withMute(prev, kind, id, !muted))
+        setBannerError(friendlyError(err))
+      })
+      .finally(() => {
+        mutingRef.current -= 1
+      })
   }
 
   // HU-4/HU-5 gating: load the current user's admin permissions for the active
@@ -914,11 +1241,14 @@ export default function ChatScreen() {
   // HU-25/26: what the caller may do here, to show the moderation controls.
   useEffect(() => {
     setMyPerms(null)
+    setMyMutedUntil(null)
     if (!activeServer || !isRealServerId(activeServer)) return
     let active = true
     getMyServerPermissions(activeServer)
       .then((perms) => {
-        if (active) setMyPerms(perms)
+        if (!active) return
+        setMyPerms(perms)
+        setMyMutedUntil(perms.mutedUntil)
       })
       .catch(() => undefined)
     return () => {
@@ -931,7 +1261,13 @@ export default function ChatScreen() {
   // sabemos que no puede (canSend === false); un permiso desconocido (null, p.ej.
   // una consulta que falló transitoriamente) NO deshabilita. El largo se cuenta
   // por code points sobre el texto trimeado, igual que el backend.
-  const sendDisabled = canSend === false
+  // HU-60: muted by a moderator. Compared with the clock (and re-checked when the
+  // mute ends, see muteClock) so the composer comes back on its own.
+  const mutedByModerator = isMutedAt(myMutedUntil)
+  const sendDisabled = canSend === false || mutedByModerator
+  const sendDisabledMessage = mutedByModerator && myMutedUntil
+    ? `Un moderador te silenció en este servidor hasta ${formatMuteEnd(myMutedUntil)}.`
+    : "No tenés permiso para enviar mensajes en este canal."
   const messageLength = [...input.trim()].length
   const messageTooLong = messageLength > MESSAGE_MAX
 
@@ -994,11 +1330,17 @@ export default function ChatScreen() {
   const canOfferTransferTo = (memberId: string) =>
     isOwner && isRealServerId(activeServer) && memberId !== user?.id
 
-  // HU-25/26: moderators see "Banear" on other members' rows and the bans list.
-  // Never on yourself or the owner. The role hierarchy (CA2) is only enforced by
-  // the backend, which answers 403 with a clear message.
+  // HU-25/26/59: moderators see "Expulsar" / "Banear" on other members' rows and
+  // the bans list. Never on yourself or the owner. The role hierarchy (CA2) is
+  // only enforced by the backend, which answers 403 with a clear message.
   const canBan = isRealServerId(activeServer) && hasServerPermission(myPerms, "ban_members")
-  const canModerate = canBan || (isRealServerId(activeServer) && hasServerPermission(myPerms, "kick_members"))
+  const canKick = isRealServerId(activeServer) && hasServerPermission(myPerms, "kick_members")
+  const canMute = isRealServerId(activeServer) && hasServerPermission(myPerms, MODERATE_MEMBERS_PERMISSION)
+  const canDeleteReportedMessages = isRealServerId(activeServer) && hasServerPermission(myPerms, "manage_messages")
+  const canModerate = canBan || canKick || canMute || canDeleteReportedMessages
+  // Activity metrics of the server: `manage_server` (the owner and `administrator`
+  // always qualify). Only hides the button; both backends check it again (CA3).
+  const canViewMetrics = isRealServerId(activeServer) && hasServerPermission(myPerms, "manage_server")
 
   const refreshPendingReports = useCallback(() => {
     if (!canModerate || !activeServer) return
@@ -1027,12 +1369,104 @@ export default function ChatScreen() {
       content: msg.text,
     })
   }
+  // HU-4/HU-5: solo mensajes reales (canal UUID) y con autor conocido.
+  const isRealMessage = (msg: Message) =>
+    isRealServerId(activeServer) && UUID_RE.test(activeChannel) && !!msg.authorId && !msg.system
+  const canEditMessage = (msg: Message) => isRealMessage(msg) && msg.authorId === user?.id && canSend !== false && !mutedByModerator
+  const canDeleteMessage = (msg: Message) =>
+    isRealMessage(msg) && (msg.authorId === user?.id || canManageMessages)
+
+  const startEditMessage = (msg: Message) => {
+    setMessageActionsTarget(null)
+    setEditingMessageId(msg.id)
+    setEditDraft(msg.text)
+    setEditError(null)
+  }
+  const cancelEditMessage = () => {
+    setEditingMessageId(null)
+    setEditDraft("")
+    setEditError(null)
+  }
+  const saveEditMessage = async () => {
+    const id = editingMessageId
+    const channelId = activeChannel
+    if (!id || editBusy) return
+    const text = editDraft.trim()
+    const original = messagesRef.current.find((m) => m.id === id)
+    if (!text) {
+      setEditError("El mensaje no puede quedar vacío. Para sacarlo, eliminalo.")
+      return
+    }
+    if (text.length > MESSAGE_MAX) {
+      setEditError(`Máximo ${MESSAGE_MAX} caracteres`)
+      return
+    }
+    if (original && original.text === text) {
+      cancelEditMessage()
+      return
+    }
+    setEditBusy(true)
+    setEditError(null)
+    try {
+      const updated = await editMessage(channelId, id, text)
+      if (activeChannelRef.current === channelId) mergeMessages([updated])
+      cancelEditMessage()
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) {
+        removeMessages([id])
+        cancelEditMessage()
+        setBannerError("Ese mensaje ya no existe.")
+      } else {
+        setEditError(friendlyError(err))
+      }
+    } finally {
+      setEditBusy(false)
+    }
+  }
+
+  // Cambiar de canal descarta una edición a medio hacer.
+  useEffect(() => {
+    setEditingMessageId(null)
+    setEditDraft("")
+    setEditError(null)
+    setMessageActionsTarget(null)
+  }, [activeChannel])
+
+  const askDeleteMessage = (msg: Message) => {
+    setMessageActionsTarget(null)
+    setDeleteError(null)
+    setDeleteTarget(msg)
+  }
+  const confirmDeleteMessage = async () => {
+    const msg = deleteTarget
+    const channelId = activeChannel
+    if (!msg || deleteBusy) return
+    setDeleteBusy(true)
+    setDeleteError(null)
+    try {
+      await deleteMessage(channelId, msg.id)
+      removeMessages([msg.id])
+      if (editingMessageId === msg.id) cancelEditMessage()
+      setDeleteTarget(null)
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) {
+        removeMessages([msg.id])
+        setDeleteTarget(null)
+      } else {
+        setDeleteError(friendlyError(err))
+      }
+    } finally {
+      setDeleteBusy(false)
+    }
+  }
+
   const canReportMessage = (msg: Message) =>
     isRealServerId(activeServer) && isRealServerId(activeChannel) && !!msg.authorId && msg.authorId !== user?.id && !msg.system && !!msg.text.trim()
-  const canBanMember = (memberId: string) =>
-    canBan &&
-    memberId !== user?.id &&
-    servers.find((s) => s.id === activeServer)?.ownerId !== memberId
+  const isModeratableMember = (memberId: string) =>
+    memberId !== user?.id && servers.find((s) => s.id === activeServer)?.ownerId !== memberId
+  const canBanMember = (memberId: string) => canBan && isModeratableMember(memberId)
+  const canKickMember = (memberId: string) => canKick && isModeratableMember(memberId)
+  const canMuteMember = (memberId: string) => canMute && isModeratableMember(memberId)
 
   // Options of a member row's "⋮" menu. Role changes will go here too.
   const memberActions = (memberId: string, memberName: string): MemberAction[] => {
@@ -1051,6 +1485,32 @@ export default function ChatScreen() {
         label: "Transferir propiedad",
         icon: "swap-horizontal-outline",
         onPress: () => openTransferForMember(memberId, memberName),
+      })
+    }
+    if (canMuteMember(memberId)) {
+      if (isMutedAt(memberMutes[memberId])) {
+        actions.push({
+          key: "unmute",
+          label: `Levantar silencio (hasta ${formatMuteEnd(memberMutes[memberId])})`,
+          icon: "volume-high-outline",
+          onPress: () => handleUnmute(memberId),
+        })
+      } else {
+        actions.push({
+          key: "mute",
+          label: "Silenciar",
+          icon: "volume-mute-outline",
+          onPress: () => openMuteModal(memberId, memberName),
+        })
+      }
+    }
+    if (canKickMember(memberId)) {
+      actions.push({
+        key: "kick",
+        label: "Expulsar",
+        icon: "person-remove-outline",
+        tone: "danger",
+        onPress: () => openKickModal(memberId, memberName),
       })
     }
     if (canBanMember(memberId)) {
@@ -1571,14 +2031,24 @@ export default function ChatScreen() {
     // CA3: si ya sabemos que no puede enviar, no intentamos (el campo está
     // deshabilitado igual). CA4: bloqueamos un texto que excede el máximo,
     // contando por code points sobre el texto trimeado, igual que el backend.
-    if (canSend === false) return
+    if (sendDisabled) return
     if ([...text].length > MESSAGE_MAX) {
       setBannerError(`Máximo ${MESSAGE_MAX} caracteres`)
+      return
+    }
+    // Menciones de rol y @everyone: si ya sabemos que no tiene el permiso no se envía, y se avisa
+    // (CA4); el backend lo valida igual y responde 403 si el permiso cambió.
+    const roleMentionIds = extractRoleMentionIds(text, mentionRoles).slice(0, MAX_ROLE_MENTIONS)
+    const everyone = hasEveryoneMention(text)
+    if (canMention === false && (everyone || roleMentionIds.length > 0)) {
+      setBannerError(MENTION_FORBIDDEN_MESSAGE)
       return
     }
     try {
       const msg = await sendMessage(activeChannel, text, user?.name, {
         serverId: activeServer,
+        roleMentions: roleMentionIds,
+        mentionEveryone: everyone,
         // "@nombre" se convierte en el id del miembro: así el backend sabe a quién se mencionó.
         mentions: extractMentionIds(
           text,
@@ -1587,6 +2057,12 @@ export default function ChatScreen() {
         ),
       })
       sentIds.current.add(msg.id)
+      forceScrollRef.current = true
+      nearBottomRef.current = true
+      for (const delay of [0, 60, 200, 500]) setTimeout(() => scrollMessagesToBottom(), delay)
+      setTimeout(() => {
+        forceScrollRef.current = false
+      }, 700)
       // Dedupe by id: the realtime messages.created echo for this same message can land
       // (via mergeMessages) before this awaited POST resolves, so a raw append would show
       // the sender's own message twice. Skip the append when the id is already present.
@@ -1605,6 +2081,25 @@ export default function ChatScreen() {
         setServerSuspended(activeServer, true)
         return
       }
+      // HU-60: muted after we loaded the permissions. The detail ends with the
+      // ISO end of the mute; keep it so the composer shows it in local time.
+      if (err instanceof ApiError && err.status === 403 && typeof err.detail === "string") {
+        const muted = err.detail.match(/^Un moderador te silenció en este servidor hasta (.+)\.$/)
+        if (muted && isMutedAt(muted[1])) {
+          setMyMutedUntil(muted[1])
+          return
+        }
+      }
+      if (
+        err instanceof ApiError &&
+        err.status === 403 &&
+        typeof err.detail === "string" &&
+        /mencion/i.test(err.detail)
+      ) {
+        setCanMention(false)
+        setBannerError(MENTION_FORBIDDEN_MESSAGE)
+        return
+      }
       // CA3: perdió el permiso con el canal abierto → deshabilitar sin recargar.
       if (err instanceof ApiError && err.status === 403) {
         setCanSend(false)
@@ -1612,6 +2107,43 @@ export default function ChatScreen() {
         return
       }
       setBannerError(friendlyError(err))
+    }
+  }
+
+  const mentionQuery = sendDisabled || suggestionsDismissedFor === input ? null : findMentionQuery(input)
+  const mentionSuggestions: MentionSuggestion[] = mentionQuery
+    ? filterMentionSuggestions(
+        mentionQuery.query,
+        roles.flatMap((r) => r.members),
+        mentionRoles,
+        canMention !== false,
+        user?.id,
+      )
+    : []
+  const selectedSuggestion = Math.min(suggestionIndex, Math.max(mentionSuggestions.length - 1, 0))
+
+  const applySuggestion = (suggestion: MentionSuggestion) => {
+    if (!mentionQuery) return
+    setInput(applyMentionSuggestion(input, mentionQuery.start, suggestion.label))
+    setSuggestionIndex(0)
+  }
+
+  const handleComposerKeyPress = (e: any) => {
+    if (mentionSuggestions.length === 0) return
+    const key = e?.nativeEvent?.key
+    const stop = () => e?.preventDefault?.()
+    if (key === "ArrowDown") {
+      stop()
+      setSuggestionIndex((selectedSuggestion + 1) % mentionSuggestions.length)
+    } else if (key === "ArrowUp") {
+      stop()
+      setSuggestionIndex((selectedSuggestion - 1 + mentionSuggestions.length) % mentionSuggestions.length)
+    } else if (key === "Tab") {
+      stop()
+      applySuggestion(mentionSuggestions[selectedSuggestion])
+    } else if (key === "Escape") {
+      stop()
+      setSuggestionsDismissedFor(input)
     }
   }
 
@@ -1898,7 +2430,9 @@ export default function ChatScreen() {
     !!user && !!process.env.EXPO_PUBLIC_API_URL,
     (serverId) => {
       const name = servers.find((s) => s.id === serverId)?.name
-      dropServerLocally(serverId, name ? `Fuiste baneado de ${name}.` : "Fuiste baneado de un servidor.")
+      // voice.access_revoked doesn't say why (HU-25 ban or HU-59 kick), so the
+      // notice stays neutral.
+      dropServerLocally(serverId, name ? `Ya no tenés acceso a ${name}.` : "Ya no tenés acceso a un servidor.")
     },
   )
 
@@ -1912,7 +2446,15 @@ export default function ChatScreen() {
     channel: realOpenChannel,
     enabled: !!user && !!process.env.EXPO_PUBLIC_API_URL,
     onMessages: mergeMessages,
+    onMessagesDeleted: removeMessages,
+    onLatestPage: syncLatestPage,
     onServerSuspended: (serverId) => setServerSuspended(serverId, true),
+    // Banned, kicked or the server was deleted: same as voice.access_revoked, the frame doesn't
+    // say why, so the notice stays neutral.
+    onAccessRevoked: (serverId) => {
+      const name = servers.find((s) => s.id === serverId)?.name
+      void dropServerLocally(serverId, name ? `Ya no tenés acceso a ${name}.` : "Ya no tenés acceso a un servidor.")
+    },
     getKnownMessageIds: () => messagesRef.current.map((m) => m.id),
   })
 
@@ -1925,6 +2467,8 @@ export default function ChatScreen() {
     if (!real) {
       permsChannelRef.current = ""
       setCanSend(null)
+      setCanMention(null)
+      setCanManageMessages(false)
       return
     }
     const channelId = activeChannel
@@ -1933,13 +2477,19 @@ export default function ChatScreen() {
     if (permsChannelRef.current !== channelId) {
       permsChannelRef.current = channelId
       setCanSend(null)
+      setCanMention(null)
+      setCanManageMessages(false)
     }
     let active = true
     const fetchPerms = () => {
       getMyChannelPermissions(activeServer, channelId)
         .then((perms) => {
           // Puede volver false->true: si recuperó el permiso, se habilita sin recargar.
-          if (active && permsChannelRef.current === channelId) setCanSend(perms.canSend)
+          if (active && permsChannelRef.current === channelId) {
+            setCanSend(perms.canSend)
+            setCanMention(perms.canMentionEveryone)
+            setCanManageMessages(perms.canManageMessages)
+          }
         })
         .catch((err) => {
           if (!active || permsChannelRef.current !== channelId) return
@@ -2369,6 +2919,87 @@ export default function ChatScreen() {
     }
   }
 
+  // ---- Moderation: kick (HU-59) --------------------------------------------
+
+  const openKickModal = (memberId: string, memberName: string) => {
+    setKickTarget({ id: memberId, name: memberName })
+    setKickError("")
+  }
+
+  const handleKick = async () => {
+    if (!kickTarget) return
+    setKickBusy(true)
+    setKickError("")
+    try {
+      await kickMember(activeServer, kickTarget.id)
+      setKickTarget(null)
+      const members = await getServerMembers(activeServer)
+      setRoles(membersToRoleGroups(members))
+    } catch (err) {
+      setKickError(friendlyError(err))
+    } finally {
+      setKickBusy(false)
+    }
+  }
+
+  // ---- Moderation: temporary mute (HU-60) -----------------------------------
+
+  const refreshMutes = useCallback(async () => {
+    if (!canMute || !activeServer) {
+      setMemberMutes({})
+      return
+    }
+    try {
+      setMemberMutes(await listMutes(activeServer))
+    } catch {
+      setMemberMutes({})
+    }
+  }, [canMute, activeServer])
+
+  useEffect(() => {
+    refreshMutes()
+  }, [refreshMutes])
+
+  // Our own mute ends on its own (CA2): re-render at that moment so the
+  // composer comes back without a reload.
+  useEffect(() => {
+    if (!myMutedUntil || !isMutedAt(myMutedUntil)) return
+    const wait = Math.min(Date.parse(myMutedUntil) - Date.now() + 500, 2_147_000_000)
+    const timer = setTimeout(() => setMuteClock((n) => n + 1), wait)
+    return () => clearTimeout(timer)
+  }, [myMutedUntil])
+
+  const openMuteModal = (memberId: string, memberName: string) => {
+    setMuteTarget({ id: memberId, name: memberName })
+    setMuteSeconds(MUTE_DURATIONS[2].seconds)
+    setMuteReason("")
+    setMuteError("")
+  }
+
+  const handleMute = async () => {
+    if (!muteTarget) return
+    setMuteBusy(true)
+    setMuteError("")
+    try {
+      await muteMember(activeServer, muteTarget.id, muteSeconds, muteReason)
+      setMuteTarget(null)
+      await refreshMutes()
+    } catch (err) {
+      setMuteError(friendlyError(err))
+    } finally {
+      setMuteBusy(false)
+    }
+  }
+
+  const handleUnmute = async (memberId: string) => {
+    try {
+      await unmuteMember(activeServer, memberId)
+    } catch (err) {
+      setBannerError(friendlyError(err))
+    }
+    await refreshMutes()
+  }
+
   const refreshBans = async (serverId: string) => {
     setBansLoading(true)
     setBansError("")
@@ -2459,7 +3090,7 @@ export default function ChatScreen() {
             <View
               key={s.id}
               {...(Platform.OS === "web"
-                ? { onMouseEnter: showTooltip(s.name), onMouseLeave: hideTooltip }
+                ? { onMouseEnter: showTooltip(s.name, serverUnread(s).muted ? "Silenciado" : undefined), onMouseLeave: hideTooltip }
                 : {})}
             >
               {activeServer === s.id && (
@@ -2491,12 +3122,20 @@ export default function ChatScreen() {
               ) : null}
               <PressableScale
                 onPress={() => setActiveServer(s.id)}
+                {...(isRealServerId(s.id)
+                  ? {
+                      onLongPress: (e: any) => openContextMenuAt(e, "server", s.id),
+                      onContextMenu: (e: any) => openContextMenuAt(e, "server", s.id),
+                    }
+                  : {})}
                 accessibilityLabel={
                   serverUnread(s).mentions > 0
                     ? `${s.name}, ${serverUnread(s).mentions} menciones sin leer`
                     : serverUnread(s).unread
-                      ? `${s.name}, mensajes sin leer`
-                      : s.name
+                      ? `${s.name}, mensajes sin leer${serverUnread(s).muted ? ", silenciado" : ""}`
+                      : serverUnread(s).muted
+                        ? `${s.name}, silenciado`
+                        : s.name
                 }
                 pressedScale={0.88}
                 hoverStyle={{ borderColor: "rgba(55,214,192,0.55)" }}
@@ -2513,6 +3152,7 @@ export default function ChatScreen() {
                       : "rgba(255,255,255,0.10)",
                   borderWidth: 1,
                   borderColor: activeServer === s.id ? "#37D6C0" : "rgba(255,255,255,0.13)",
+                  opacity: serverUnread(s).muted && activeServer !== s.id ? 0.55 : 1,
                 }}
               >
                 {s.iconUrl ? (
@@ -2543,7 +3183,7 @@ export default function ChatScreen() {
                       width: 12,
                       height: 12,
                       borderRadius: 6,
-                      backgroundColor: "#FFFFFF",
+                      backgroundColor: serverUnread(s).muted ? "#8DA8AC" : "#FFFFFF",
                       borderWidth: 2,
                       borderColor: "#37D6C0",
                     }}
@@ -2599,7 +3239,152 @@ export default function ChatScreen() {
             </PressableScale>
           </View>
         </ScrollView>
+        {!isNarrow ? (
+          <View
+            {...(Platform.OS === "web"
+              ? { onMouseEnter: showTooltip("Marcar todo como leído"), onMouseLeave: hideTooltip }
+              : {})}
+          >
+            <PressableScale
+              onPress={handleMarkAllRead}
+              disabled={!hasAnyUnread}
+              accessibilityLabel={
+                hasAnyUnread ? "Marcar todo como leído" : "Marcar todo como leído (no hay nada sin leer)"
+              }
+              pressedScale={0.88}
+              hoverStyle={{ backgroundColor: "rgba(55,214,192,0.14)", borderColor: "rgba(55,214,192,0.55)" }}
+              style={{
+                alignItems: "center",
+                justifyContent: "center",
+                width: 34,
+                height: 34,
+                borderRadius: 15,
+                backgroundColor: "rgba(255,255,255,0.10)",
+                borderWidth: 1,
+                borderColor: "rgba(255,255,255,0.13)",
+                opacity: hasAnyUnread ? 1 : 0.35,
+              }}
+            >
+              <Ionicons name="checkmark-done-outline" size={17} color="#37D6C0" />
+            </PressableScale>
+          </View>
+        ) : null}
       </View>
+
+     <Modal visible={serverMenu !== null} transparent animationType="none" onRequestClose={closeServerMenu}>
+        <Pressable
+          style={{ flex: 1 }}
+          onPress={closeServerMenu}
+          accessibilityLabel="Cerrar menú"
+          {...({ onContextMenu: (e: any) => e?.preventDefault?.() } as object)}
+        >
+          {serverMenu ? (
+            <View
+              style={{
+                position: "absolute",
+                left: Math.max(8, Math.min(serverMenu.x, windowWidth - Math.max(serverMenu.w, 220) - 8)),
+                top: Math.max(8, Math.min(serverMenu.y, windowHeight - (serverMenu.full ? 510 : 120))),
+                width: Math.max(serverMenu.w, 220),
+                paddingVertical: 6,
+                borderRadius: 10,
+                backgroundColor: "#1B2630",
+                borderWidth: 1,
+                borderColor: "rgba(255,255,255,0.13)",
+              }}
+            >
+              {(() => {
+                const isChannel = serverMenu.kind === "channel"
+                const hasUnreadHere = isChannel ? !!unread.channels[serverMenu.id] : !!unread.servers[serverMenu.id]
+                const isMuted = isChannel ? !!mutes.channels[serverMenu.id] : !!mutes.servers[serverMenu.id]
+                const item = (
+                  label: string,
+                  icon: React.ComponentProps<typeof Ionicons>["name"],
+                  onPress: () => void,
+                  opts: { disabled?: boolean; danger?: boolean; badge?: number } = {},
+                ) => (
+                  <PressableScale
+                    key={label}
+                    onPress={onPress}
+                    disabled={opts.disabled}
+                    accessibilityLabel={label}
+                    hoverStyle={{ backgroundColor: opts.danger ? "rgba(255,127,114,0.14)" : "rgba(55,214,192,0.12)" }}
+                    style={{
+                      flexDirection: "row",
+                      alignItems: "center",
+                      gap: 10,
+                      paddingHorizontal: 14,
+                      paddingVertical: 10,
+                      opacity: opts.disabled ? 0.4 : 1,
+                    }}
+                  >
+                    <Ionicons name={icon} size={16} color={opts.danger ? "#FF7F72" : "#37D6C0"} />
+                    <Text style={{ flex: 1, color: opts.danger ? "#FF7F72" : "#E6F3F3", fontSize: 13, fontWeight: "600" }}>
+                      {label}
+                    </Text>
+                    {opts.badge ? (
+                      <View style={{ minWidth: 18, height: 18, paddingHorizontal: 5, borderRadius: 9999, alignItems: "center", justifyContent: "center", backgroundColor: "#FF7F72" }}>
+                        <Text style={{ color: "#04211D", fontSize: 10, fontWeight: "800" }}>{opts.badge > 99 ? "99+" : opts.badge}</Text>
+                      </View>
+                    ) : null}
+                  </PressableScale>
+                )
+                const separator = (key: string) => (
+                  <View key={key} style={{ height: 1, marginVertical: 5, marginHorizontal: 10, backgroundColor: "rgba(255,255,255,0.10)" }} />
+                )
+                const full = serverMenu.full && !activeSuspended
+                const run = (action: () => void) => () => {
+                  closeServerMenu()
+                  action()
+                }
+                const manageItems = full
+                  ? [
+                      canCreateInvite ? item("Invitar al servidor", "person-add-outline", run(handleGenerateInvite)) : null,
+                      canModerate
+                        ? item("Moderación", "shield-checkmark-outline", run(() => setServerReportsOpen(true)), { badge: pendingReports })
+                        : null,
+                      canBan ? item("Miembros baneados", "ban-outline", run(openBansModal)) : null,
+                      canManageRoles ? item("Roles", "shield-outline", run(openRoles)) : null,
+                      canViewMetrics ? item("Métricas del servidor", "stats-chart-outline", run(() => setServerMetricsOpen(true))) : null,
+                      canAdministrate ? item("Configuración del servidor", "settings-outline", run(openSettings)) : null,
+                    ].filter(Boolean)
+                  : []
+                const exitItems = full
+                  ? [
+                      !isOwner ? item("Reportar servidor", "flag-outline", run(() => setReportTarget({ type: "server", serverId: activeServer, name: activeServerName })), { danger: true }) : null,
+                      item("Salir del servidor", "exit-outline", run(openLeaveModal), { danger: true }),
+                      isOwner ? item("Eliminar servidor", "trash-outline", run(openDeleteServer), { danger: true }) : null,
+                    ].filter(Boolean)
+                  : []
+                return (
+                  <>
+                    {item(
+                      "Marcar como leído",
+                      "checkmark-done-outline",
+                      () => (isChannel ? handleMarkChannelRead(serverMenu.id) : handleMarkServerRead(serverMenu.id)),
+                      { disabled: !hasUnreadHere },
+                    )}
+                    {item(
+                      isMuted
+                        ? isChannel
+                          ? "Reactivar notificaciones del canal"
+                          : "Reactivar notificaciones del servidor"
+                        : isChannel
+                          ? "Silenciar canal"
+                          : "Silenciar servidor",
+                      isMuted ? "notifications-outline" : "notifications-off-outline",
+                      () => handleToggleMute(serverMenu.kind, serverMenu.id, !isMuted),
+                    )}
+                    {manageItems.length > 0 ? separator("sep-manage") : null}
+                    {manageItems}
+                    {exitItems.length > 0 ? separator("sep-exit") : null}
+                    {exitItems}
+                  </>
+                )
+              })()}
+            </View>
+          ) : null}
+        </Pressable>
+      </Modal>
 
       {/* Server rail hover tooltip (web only) */}
       {Platform.OS === "web" && tooltip ? (
@@ -2625,6 +3410,11 @@ export default function ChatScreen() {
           <Text style={{ color: "#E6F3F3", fontSize: 12, fontWeight: "700" }} numberOfLines={1}>
             {tooltip.label}
           </Text>
+          {tooltip.sub ? (
+            <Text style={{ color: "#8DA8AC", fontSize: 11, marginTop: 2 }} numberOfLines={1}>
+              {tooltip.sub}
+            </Text>
+          ) : null}
         </View>
       ) : null}
 
@@ -2638,6 +3428,29 @@ export default function ChatScreen() {
           borderRightColor: "rgba(255,255,255,0.13)",
         }}
       >
+        {isNarrow ? (
+          <PressableScale
+            onPress={handleMarkAllRead}
+            disabled={!hasAnyUnread}
+            accessibilityLabel="Marcar todo como leído"
+            hoverStyle={{ backgroundColor: "rgba(55,214,192,0.14)" }}
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 8,
+              paddingHorizontal: 14,
+              paddingVertical: 11,
+              borderBottomWidth: 1,
+              borderBottomColor: "rgba(255,255,255,0.13)",
+              opacity: hasAnyUnread ? 1 : 0.4,
+            }}
+          >
+            <Ionicons name="checkmark-done-outline" size={16} color="#37D6C0" />
+            <Text style={{ color: "#37D6C0", fontSize: 13, fontWeight: "700" }}>
+              Marcar todo como leído
+            </Text>
+          </PressableScale>
+        ) : null}
         {/* Server name header: name on its own row so long names stay readable,
             actions on a compact row underneath. Hidden when no real server is
             selected (e.g. the user has none) so Invitar/Salir never show for an
@@ -2654,176 +3467,29 @@ export default function ChatScreen() {
               resizeMode="cover"
             />
           ) : null}
-          <Text style={{ color: "#E6F3F3", fontWeight: "700", fontSize: 14 }} numberOfLines={2}>
-            {servers.find((s) => s.id === activeServer)?.name ?? ""}
-          </Text>
-          {/* Primary actions. "Invitar" is gated on CREATE_INVITE (canCreateInvite):
-              when shown it grows to anchor the row; "Salir" keeps its natural width
-              beside it, and is always available to every member. */}
-          <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6, display: activeSuspended ? "none" : "flex" }}>
-
-            {canCreateInvite ? (
-              <PressableScale
-                onPress={handleGenerateInvite}
-                hoverStyle={{ backgroundColor: "rgba(55,214,192,0.22)" }}
-                style={{
-                  flex: 1,
-                  flexDirection: "row",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  gap: 5,
-                  paddingVertical: 6,
-                  borderRadius: 8,
-                  backgroundColor: "rgba(55,214,192,0.12)",
-                }}
-              >
-                <Ionicons name="person-add-outline" size={13} color="#37D6C0" />
-                <Text style={{ color: "#37D6C0", fontSize: 11.5, fontWeight: "700" }}>Invitar</Text>
-              </PressableScale>
-            ) : null}
-            <PressableScale
-              onPress={openLeaveModal}
-              accessibilityLabel="Salir del servidor"
-              hoverStyle={{ backgroundColor: "rgba(255,127,114,0.14)" }}
-              style={{
-                flexDirection: "row",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: 5,
-                paddingHorizontal: 12,
-                paddingVertical: 6,
-                borderRadius: 8,
-                backgroundColor: "rgba(255,255,255,0.05)",
-              }}
-            >
-              <Ionicons name="exit-outline" size={13} color="#8DA8AC" />
-              <Text style={{ color: "#8DA8AC", fontSize: 11.5, fontWeight: "600" }}>Salir</Text>
-            </PressableScale>
-            {!isOwner && isRealServerId(activeServer) ? (
-              <PressableScale
-                onPress={() => setReportTarget({ type: "server", serverId: activeServer, name: activeServerName })}
-                accessibilityLabel="Reportar servidor"
-                hoverStyle={{ backgroundColor: "rgba(255,127,114,0.14)" }}
-                style={{
-                  flexDirection: "row",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  paddingHorizontal: 10,
-                  paddingVertical: 6,
-                  borderRadius: 8,
-                  backgroundColor: "rgba(255,255,255,0.05)",
-                }}
-              >
-                <Ionicons name="flag-outline" size={13} color="#8DA8AC" />
-              </PressableScale>
-            ) : null}
-            {canModerate ? (
-              <PressableScale
-                onPress={() => setServerReportsOpen(true)}
-                accessibilityLabel={pendingReports > 0 ? `Moderación del servidor, ${pendingReports} reportes pendientes` : "Moderación del servidor"}
-                hoverStyle={{ backgroundColor: "rgba(255,127,114,0.30)" }}
-                style={{
-                  flexDirection: "row",
-                  alignItems: "center",
-                  gap: 5,
-                  paddingHorizontal: 10,
-                  paddingVertical: 5,
-                  borderRadius: 8,
-                  backgroundColor: "rgba(255,127,114,0.18)",
-                  borderWidth: 1,
-                  borderColor: "rgba(255,127,114,0.55)",
-                }}
-              >
-                <Ionicons name="shield-outline" size={13} color="#FF7F72" />
-                <Text style={{ color: "#FF7F72", fontSize: 11.5, fontWeight: "700" }}>Moderación</Text>
-                {pendingReports > 0 ? (
-                  <View style={{ minWidth: 17, height: 17, paddingHorizontal: 4, borderRadius: 9999, alignItems: "center", justifyContent: "center", backgroundColor: "#FF7F72" }}>
-                    <Text style={{ color: "#04211D", fontSize: 10, fontWeight: "800" }}>{pendingReports > 99 ? "99+" : pendingReports}</Text>
-                  </View>
-                ) : null}
-              </PressableScale>
-            ) : null}
-            {canBan ? (
-              <PressableScale
-                onPress={openBansModal}
-                accessibilityLabel="Ver miembros baneados"
-                hoverStyle={{ backgroundColor: "rgba(255,127,114,0.30)" }}
-                style={{
-                  flexDirection: "row",
-                  alignItems: "center",
-                  gap: 5,
-                  paddingHorizontal: 10,
-                  paddingVertical: 5,
-                  borderRadius: 8,
-                  backgroundColor: "rgba(255,127,114,0.18)",
-                  borderWidth: 1,
-                  borderColor: "rgba(255,127,114,0.55)",
-                }}
-              >
-                <Ionicons name="ban-outline" size={13} color="#FF7F72" />
-                <Text style={{ color: "#FF7F72", fontSize: 11.5, fontWeight: "700" }}>Miembros baneados</Text>
-              </PressableScale>
-            ) : null}
-          </View>
-          {/* Admin tools — banner config (#95), roles (#92), delete server
-              (#97). Rendered as a separate row of uniform square icon buttons
-              so they never overflow the sidebar, and only when the member can
-              see at least one of them, so the row is never empty. */}
-          {!activeSuspended && (canManageRoles || (isOwner && isRealServerId(activeServer))) ? (
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-              {canAdministrate ? (
-                <PressableScale
-                  onPress={openSettings}
-                  accessibilityLabel="Configuración del servidor"
-                  hoverStyle={{ backgroundColor: "rgba(255,255,255,0.12)" }}
-                  style={{
-                    width: 34,
-                    height: 30,
-                    alignItems: "center",
-                    justifyContent: "center",
-                    borderRadius: 8,
-                    backgroundColor: "rgba(255,255,255,0.05)",
-                  }}
-                >
-                  <Ionicons name="settings-outline" size={15} color="#8DA8AC" />
-                </PressableScale>
+          <PressableScale
+            onPress={openServerMenu}
+            accessibilityLabel={`Opciones del servidor ${activeServerName}`}
+            hoverStyle={{ backgroundColor: "rgba(255,255,255,0.06)" }}
+            style={{ borderRadius: 8, marginHorizontal: -4, paddingHorizontal: 4, paddingVertical: 2 }}
+          >
+            <View ref={serverNameRef} collapsable={false} style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+              <Text style={{ flex: 1, color: "#E6F3F3", fontWeight: "700", fontSize: 14 }} numberOfLines={2}>
+                {activeServerName}
+              </Text>
+              {mutes.servers[activeServer] ? (
+                <Ionicons name="notifications-off-outline" size={13} color="#5E7E82" />
               ) : null}
-              {canManageRoles ? (
-                <PressableScale
-                  onPress={openRoles}
-                  accessibilityLabel="Roles del servidor"
-                  hoverStyle={{ backgroundColor: "rgba(255,255,255,0.12)" }}
-                  style={{
-                    width: 34,
-                    height: 30,
-                    alignItems: "center",
-                    justifyContent: "center",
-                    borderRadius: 8,
-                    backgroundColor: "rgba(255,255,255,0.05)",
-                  }}
-                >
-                  <Ionicons name="shield-outline" size={15} color="#8DA8AC" />
-                </PressableScale>
+              {canModerate && pendingReports > 0 && !activeSuspended ? (
+                <View style={{ minWidth: 17, height: 17, paddingHorizontal: 4, borderRadius: 9999, alignItems: "center", justifyContent: "center", backgroundColor: "#FF7F72" }}>
+                  <Text style={{ color: "#04211D", fontSize: 10, fontWeight: "800" }}>{pendingReports > 99 ? "99+" : pendingReports}</Text>
+                </View>
               ) : null}
-              {isOwner && isRealServerId(activeServer) ? (
-                <PressableScale
-                  onPress={openDeleteServer}
-                  accessibilityLabel="Eliminar servidor"
-                  hoverStyle={{ backgroundColor: "rgba(255,127,114,0.22)" }}
-                  style={{
-                    width: 34,
-                    height: 30,
-                    alignItems: "center",
-                    justifyContent: "center",
-                    borderRadius: 8,
-                    backgroundColor: "rgba(255,127,114,0.12)",
-                  }}
-                >
-                  <Ionicons name="trash-outline" size={15} color="#FF7F72" />
-                </PressableScale>
-              ) : null}
+              <View style={{ width: 26, height: 26, borderRadius: 8, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(255,255,255,0.06)" }}>
+                <Ionicons name="ellipsis-horizontal" size={15} color="#C9DADC" />
+              </View>
             </View>
-          ) : null}
+          </PressableScale>
         </View>
         ) : null}
 
@@ -2896,13 +3562,19 @@ export default function ChatScreen() {
               </View>
               {cat.channels.map((ch) => {
                 const active = activeChannel === ch.id
-                const cu = ch.type === "text" ? channelUnread(ch) : { unread: false, mentions: 0 }
+                const cu = ch.type === "text" ? channelUnread(ch) : { unread: false, mentions: 0, muted: false }
                 const inCall = ch.type === "voice" && voice.channel?.id === ch.id && voice.status !== "idle"
                 const roster = voiceRosterFor(ch.id)
                 return (
                   <View key={ch.id}>
                   <PressableScale
                     onPress={() => handleChannelPress(ch)}
+                    {...(ch.type === "text" && isRealServerId(activeServer)
+                      ? {
+                          onLongPress: (e: any) => openContextMenuAt(e, "channel", ch.id),
+                          onContextMenu: (e: any) => openContextMenuAt(e, "channel", ch.id),
+                        }
+                      : {})}
                     accessibilityLabel={
                       ch.type === "voice"
                         ? `Canal de voz ${ch.name}`
@@ -2912,7 +3584,7 @@ export default function ChatScreen() {
                               : cu.unread
                                 ? ", mensajes sin leer"
                                 : ""
-                          }`
+                          }${cu.muted ? ", silenciado" : ""}`
                     }
                     pressedScale={1}
                     hoverStyle={active ? undefined : { backgroundColor: "rgba(255,255,255,0.05)" }}
@@ -2941,13 +3613,22 @@ export default function ChatScreen() {
                       style={{
                         flex: 1,
                         fontSize: 12,
-                        color: inCall ? "#4FD69C" : active || cu.unread ? "#E6F3F3" : "#8DA8AC",
-                        fontWeight: inCall || active || cu.unread ? "700" : "400",
+                        color: inCall
+                          ? "#4FD69C"
+                          : active || (cu.unread && !cu.muted)
+                            ? "#E6F3F3"
+                            : cu.muted
+                              ? "#5E7E82"
+                              : "#8DA8AC",
+                        fontWeight: inCall || active || (cu.unread && !cu.muted) ? "700" : "400",
                       }}
                       numberOfLines={1}
                     >
                       {ch.name}
                     </Text>
+                    {cu.muted ? (
+                      <Ionicons name="notifications-off-outline" size={11} color="#5E7E82" />
+                    ) : null}
                     {canManageChannels && active ? (
                       <View style={{ flexDirection: "row", gap: 2 }}>
                         <PressableScale
@@ -2996,7 +3677,12 @@ export default function ChatScreen() {
                       // CA1: actividad sin leer en el canal.
                       <View
                         accessibilityLabel="Mensajes sin leer"
-                        style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: "#E6F3F3" }}
+                        style={{
+                          width: cu.muted ? 6 : 8,
+                          height: cu.muted ? 6 : 8,
+                          borderRadius: 4,
+                          backgroundColor: cu.muted ? "#5E7E82" : "#E6F3F3",
+                        }}
                       />
                     ) : null}
                   </PressableScale>
@@ -3220,11 +3906,60 @@ export default function ChatScreen() {
           </View>
         ) : null}
 
+        {bannerError && !isTransferRecipient ? (
+          <View
+            style={{
+              ...NOTICE_ERROR,
+              marginHorizontal: 16,
+              marginTop: 8,
+              marginBottom: 0,
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 8,
+            }}
+          >
+            <Text style={{ flex: 1, color: "#FF9E94", fontSize: 12 }}>{bannerError}</Text>
+            <TouchableOpacity
+              onPress={() => setBannerError("")}
+              accessibilityLabel="Cerrar aviso"
+              hitSlop={8}
+            >
+              <Ionicons name="close" size={14} color="#FF9E94" />
+            </TouchableOpacity>
+          </View>
+        ) : null}
+
         {/* Messages */}
         <FlatList
+          ref={messagesListRef}
           data={messages}
+          onScrollToIndexFailed={(info) => {
+            messagesListRef.current?.scrollToOffset({
+              offset: Math.max(0, info.averageItemLength * info.index),
+              animated: false,
+            })
+            setTimeout(() => {
+              messagesListRef.current?.scrollToIndex({ index: info.index, viewPosition: 0.1, animated: false })
+            }, 150)
+          }}
           keyExtractor={(m) => m.id}
           style={{ flex: 1 }}
+          scrollEventThrottle={64}
+          onScroll={(e) => {
+            const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent
+            nearBottomRef.current = contentOffset.y + layoutMeasurement.height >= contentSize.height - 120
+            if (nearBottomRef.current && dividerActiveRef.current && Date.now() - dividerShownAtRef.current > 1500) {
+              dividerActiveRef.current = false
+              setUnreadMark(null)
+            }
+          }}
+          onLayout={(e) => {
+            listViewHeightRef.current = e.nativeEvent.layout.height
+          }}
+          onContentSizeChange={(_w, h) => {
+            listContentHeightRef.current = h
+            if (forceScrollRef.current || nearBottomRef.current) scrollMessagesToBottom()
+          }}
           // HU-6 CA1: keep the reading position when older messages are prepended,
           // so the view does not jump. ListHeaderComponent renders the pager above
           // the oldest message (the list is not inverted: newest is at the bottom).
@@ -3274,13 +4009,32 @@ export default function ChatScreen() {
             // Only wire navigation when the message carries a public author id.
             // Mock messages don't, so their authors stay non-tappable for now.
             const goToAuthor = msg.authorId
-              ? () => router.push(`/users/${msg.authorId}`)
+              ? () => router.push(msg.authorId === user?.id ? "/(main)/profile" : `/users/${msg.authorId}`)
               : undefined
+            const authorAvatarUrl = msg.authorId
+              ? msg.authorId === user?.id
+                ? user?.avatarUrl ?? null
+                : avatarUrlById.get(msg.authorId) ?? null
+              : null
             const reportable = canReportMessage(msg)
+            const mentionsMe =
+              !!user?.id &&
+              msg.authorId !== user.id &&
+              (msg.mentionsEveryone === true || (msg.mentionedUserIds?.includes(user.id) ?? false))
             const showReport = reportable && Platform.OS === "web"
-            return (
+            const editable = canEditMessage(msg)
+            const deletable = canDeleteMessage(msg)
+            const isEditing = editingMessageId === msg.id
+            const showActions = Platform.OS === "web" && !isEditing && hoveredMessage === msg.id
+            const onLongPressMessage =
+              editable || deletable
+                ? () => setMessageActionsTarget(msg)
+                : reportable
+                  ? () => reportMessage(msg)
+                  : undefined
+            const row = (
             <Pressable
-              onLongPress={reportable ? () => reportMessage(msg) : undefined}
+              onLongPress={isEditing ? undefined : onLongPressMessage}
               delayLongPress={350}
               accessibilityActions={reportable ? [{ name: "report", label: "Reportar mensaje" }] : undefined}
               onAccessibilityAction={(e) => {
@@ -3298,15 +4052,23 @@ export default function ChatScreen() {
                 borderRadius: 8,
                 marginHorizontal: -6,
                 paddingHorizontal: 6,
-                backgroundColor: Platform.OS === "web" && hoveredMessage === msg.id ? "rgba(255,255,255,0.03)" : "transparent",
+                paddingVertical: mentionsMe ? 4 : 0,
+                borderLeftWidth: mentionsMe ? 3 : 0,
+                borderLeftColor: "#37D6C0",
+                backgroundColor: mentionsMe
+                  ? "rgba(55,214,192,0.12)"
+                  : Platform.OS === "web" && hoveredMessage === msg.id
+                    ? "rgba(255,255,255,0.03)"
+                    : "transparent",
               }}
+              accessibilityHint={mentionsMe ? "Te mencionaron en este mensaje" : undefined}
             >
               <TouchableOpacity
                 onPress={goToAuthor}
                 disabled={!goToAuthor}
                 accessibilityLabel={goToAuthor ? `Ver perfil de ${msg.author}` : undefined}
               >
-                <Avatar initials={authorInitials} />
+                <Avatar initials={authorInitials} uri={authorAvatarUrl} />
               </TouchableOpacity>
               <View style={{ flex: 1 }}>
                 <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 8, flexWrap: "wrap" }}>
@@ -3326,18 +4088,114 @@ export default function ChatScreen() {
                   ) : null}
                   <Text style={{ color: "#8DA8AC", fontSize: 10 }}>{msg.time}</Text>
                   {msg.edited ? <Text style={{ color: "#8DA8AC", fontSize: 9.5 }}>(editado)</Text> : null}
+                  {Platform.OS === "web" && !isEditing && (editable || deletable) ? (
+                    <View
+                      style={{
+                        marginLeft: "auto",
+                        flexDirection: "row",
+                        gap: 4,
+                        opacity: showActions ? 1 : 0,
+                      }}
+                    >
+                      {editable ? (
+                        <PressableScale
+                          onPress={() => startEditMessage(msg)}
+                          accessibilityLabel="Editar mensaje"
+                          hoverStyle={{ backgroundColor: "rgba(55,214,192,0.16)" }}
+                          style={{ flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6 }}
+                        >
+                          <Ionicons name="create-outline" size={11} color="#8DE9DC" />
+                          <Text style={{ color: "#8DE9DC", fontSize: 10.5, fontWeight: "700" }}>Editar</Text>
+                        </PressableScale>
+                      ) : null}
+                      {deletable ? (
+                        <PressableScale
+                          onPress={() => askDeleteMessage(msg)}
+                          accessibilityLabel="Eliminar mensaje"
+                          hoverStyle={{ backgroundColor: "rgba(255,127,114,0.18)" }}
+                          style={{ flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6 }}
+                        >
+                          <Ionicons name="trash-outline" size={11} color="#FF9E94" />
+                          <Text style={{ color: "#FF9E94", fontSize: 10.5, fontWeight: "700" }}>Eliminar</Text>
+                        </PressableScale>
+                      ) : null}
+                    </View>
+                  ) : null}
                   {showReport ? (
                     <PressableScale
                       onPress={() => reportMessage(msg)}
                       accessibilityLabel="Reportar mensaje"
                       hoverStyle={{ backgroundColor: "rgba(255,127,114,0.18)" }}
-                      style={{ marginLeft: "auto", flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6, opacity: hoveredMessage === msg.id ? 1 : 0 }}
+                      style={{ marginLeft: editable || deletable ? 0 : "auto", flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6, opacity: hoveredMessage === msg.id ? 1 : 0 }}
                     >
                       <Ionicons name="flag-outline" size={11} color="#FF9E94" />
                       <Text style={{ color: "#FF9E94", fontSize: 10.5, fontWeight: "700" }}>Reportar</Text>
                     </PressableScale>
                   ) : null}
                 </View>
+                {isEditing ? (
+                  <View style={{ marginTop: 4, gap: 6 }}>
+                    <TextInput
+                      value={editDraft}
+                      onChangeText={(t) => {
+                        setEditDraft(t)
+                        if (editError) setEditError(null)
+                      }}
+                      autoFocus
+                      multiline
+                      editable={!editBusy}
+                      maxLength={MESSAGE_MAX + 1}
+                      accessibilityLabel="Editar mensaje"
+                      onKeyPress={(e: any) => {
+                        if (Platform.OS !== "web") return
+                        const key = e?.nativeEvent?.key
+                        if (key === "Escape") cancelEditMessage()
+                        else if (key === "Enter" && !e?.nativeEvent?.shiftKey) {
+                          e.preventDefault?.()
+                          void saveEditMessage()
+                        }
+                      }}
+                      style={{
+                        color: "#E6F3F3",
+                        fontSize: 12.5,
+                        minHeight: 36,
+                        paddingHorizontal: 10,
+                        paddingVertical: 8,
+                        borderRadius: 8,
+                        borderWidth: 1,
+                        borderColor: editError ? "#FF7F72" : "rgba(55,214,192,0.45)",
+                        backgroundColor: "rgba(255,255,255,0.05)",
+                        ...(Platform.OS === "web" ? ({ outlineStyle: "none" } as object) : {}),
+                      }}
+                    />
+                    {editError ? <Text style={{ color: "#FF9E94", fontSize: 11 }}>{editError}</Text> : null}
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                      <PressableScale
+                        onPress={cancelEditMessage}
+                        disabled={editBusy}
+                        accessibilityLabel="Cancelar edición"
+                        style={{ paddingHorizontal: 10, paddingVertical: 5, borderRadius: 6, backgroundColor: "rgba(255,255,255,0.08)" }}
+                      >
+                        <Text style={{ color: "#E6F3F3", fontSize: 11, fontWeight: "700" }}>Cancelar</Text>
+                      </PressableScale>
+                      <PressableScale
+                        onPress={() => void saveEditMessage()}
+                        disabled={editBusy}
+                        accessibilityLabel="Guardar mensaje editado"
+                        style={{ paddingHorizontal: 10, paddingVertical: 5, borderRadius: 6, backgroundColor: "#37D6C0", opacity: editBusy ? 0.6 : 1 }}
+                      >
+                        {editBusy ? (
+                          <ActivityIndicator size="small" color="#0B1822" />
+                        ) : (
+                          <Text style={{ color: "#0B1822", fontSize: 11, fontWeight: "800" }}>Guardar</Text>
+                        )}
+                      </PressableScale>
+                      {Platform.OS === "web" ? (
+                        <Text style={{ color: "#8DA8AC", fontSize: 10 }}>Enter para guardar · Esc para cancelar</Text>
+                      ) : null}
+                    </View>
+                  </View>
+                ) : (
                 <Text style={{ color: "#E6F3F3", marginTop: 2, fontSize: 12.5 }}>
                   {msg.mentionRole ? (
                     <Text style={{ color: "#37D6C0", fontWeight: "700", backgroundColor: "rgba(55,214,192,0.17)" }}>
@@ -3346,6 +4204,7 @@ export default function ChatScreen() {
                   ) : null}
                   {msg.mentionRole ? " " : ""}{msg.text}
                 </Text>
+                )}
                 {msg.reactions ? (
                   <View style={{ flexDirection: "row", gap: 6, marginTop: 6 }}>
                     {msg.reactions.map((r) => (
@@ -3375,6 +4234,24 @@ export default function ChatScreen() {
               </View>
             </Pressable>
             )
+            if (unreadDivider?.messageId !== msg.id) return row
+            return (
+              <View>
+                {/* Línea "Mensajes no leídos": desde acá hacia abajo, lo que no se había visto. */}
+                <View
+                  accessibilityRole="header"
+                  accessibilityLabel={`${unreadDivider.count} mensaje${unreadDivider.count === 1 ? "" : "s"} no leído${unreadDivider.count === 1 ? "" : "s"}`}
+                  style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 10 }}
+                >
+                  <View style={{ flex: 1, height: 1, backgroundColor: "rgba(255,107,107,0.55)" }} />
+                  <Text style={{ color: "#FF8A80", fontSize: 10.5, fontWeight: "800", letterSpacing: 0.4 }}>
+                    {unreadDivider.count} {unreadDivider.count === 1 ? "MENSAJE NO LEÍDO" : "MENSAJES NO LEÍDOS"}
+                  </Text>
+                  <View style={{ flex: 1, height: 1, backgroundColor: "rgba(255,107,107,0.55)" }} />
+                </View>
+                {row}
+              </View>
+            )
           }}
         />
 
@@ -3386,7 +4263,68 @@ export default function ChatScreen() {
         </View>
 
         {/* Input */}
-        <View style={{ paddingHorizontal: 16, paddingBottom: 12, paddingTop: 8, display: activeSuspended ? "none" : "flex" }}>
+        <View
+          style={{
+            paddingHorizontal: 16,
+            paddingBottom: 12,
+            paddingTop: 8,
+            display: activeSuspended ? "none" : "flex",
+            position: "relative",
+            zIndex: 20,
+          }}
+        >
+          {/* Sugerencias al escribir "@": @everyone, roles y miembros. */}
+          {mentionSuggestions.length > 0 ? (
+            <View
+              accessibilityRole="menu"
+              style={{
+                position: "absolute",
+                left: 16,
+                right: 16,
+                bottom: "100%",
+                marginBottom: -4,
+                maxHeight: 260,
+                borderRadius: 12,
+                borderWidth: 1,
+                borderColor: "rgba(255,255,255,0.13)",
+                backgroundColor: "#0E2A30",
+                paddingVertical: 4,
+                overflow: "hidden",
+                zIndex: 30,
+              }}
+            >
+              {mentionSuggestions.map((sg, i) => (
+                <Pressable
+                  key={`${sg.kind}:${sg.id}`}
+                  onPress={() => applySuggestion(sg)}
+                  accessibilityRole="menuitem"
+                  accessibilityLabel={
+                    sg.kind === "everyone"
+                      ? "Mencionar a todo el servidor"
+                      : sg.kind === "role"
+                        ? `Mencionar al rol ${sg.label}`
+                        : `Mencionar a ${sg.label}`
+                  }
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 8,
+                    paddingHorizontal: 12,
+                    paddingVertical: 7,
+                    backgroundColor: i === selectedSuggestion ? "rgba(55,214,192,0.14)" : "transparent",
+                  }}
+                >
+                  <Text style={{ color: "#37D6C0", fontWeight: "700", fontSize: 12 }}>@</Text>
+                  <Text style={{ color: "#E6F3F3", fontSize: 12, flexShrink: 1 }} numberOfLines={1}>
+                    {sg.label}
+                  </Text>
+                  <Text style={{ color: "#8DA8AC", fontSize: 10.5 }}>
+                    {sg.kind === "everyone" ? "Avisa a todo el canal" : sg.kind === "role" ? "Rol" : ""}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+          ) : null}
           <View
             style={{
               flexDirection: "row",
@@ -3403,16 +4341,18 @@ export default function ChatScreen() {
             <Text style={{ color: "#8DA8AC", opacity: 0.7 }}>＋</Text>
             <TextInput
               value={input}
-              onChangeText={setInput}
+              onChangeText={(value) => {
+                setInput(value)
+                setSuggestionIndex(0)
+              }}
+              onKeyPress={handleComposerKeyPress}
               editable={!sendDisabled}
-              placeholder={
-                sendDisabled
-                  ? "No tenés permiso para enviar mensajes en este canal."
-                  : `Escribí en #${channel?.name ?? ""}`
-              }
+              placeholder={sendDisabled ? sendDisabledMessage : `Escribí en #${channel?.name ?? ""}`}
               placeholderTextColor="#5E7E82"
               style={{ flex: 1, color: "#E6F3F3", fontSize: 12, opacity: sendDisabled ? 0.5 : 1 }}
-              onSubmitEditing={handleSend}
+              onSubmitEditing={() =>
+                mentionSuggestions.length > 0 ? applySuggestion(mentionSuggestions[selectedSuggestion]) : handleSend()
+              }
               returnKeyType="send"
             />
             <PressableScale
@@ -3443,7 +4383,7 @@ export default function ChatScreen() {
             >
               <Text style={{ color: sendDisabled || messageTooLong ? "#FF9B8A" : "#8DA8AC", fontSize: 10.5, flexShrink: 1 }}>
                 {sendDisabled
-                  ? "No tenés permiso para enviar mensajes en este canal."
+                  ? sendDisabledMessage
                   : messageTooLong
                     ? `Máximo ${MESSAGE_MAX} caracteres`
                     : ""}
@@ -3550,7 +4490,7 @@ export default function ChatScreen() {
                     return (
                       <TouchableOpacity
                         key={m.id}
-                        onPress={() => router.push(`/users/${m.id}`)}
+                        onPress={() => router.push(m.id === user?.id ? "/(main)/profile" : `/users/${m.id}`)}
                         accessibilityLabel={`Ver perfil de ${m.name}`}
                         {...(Platform.OS === "web"
                           ? {
@@ -3570,15 +4510,16 @@ export default function ChatScreen() {
                         }}
                       >
                         <View style={{ position: "relative" }}>
-                          <Avatar initials={m.avatar} size={26} />
+                          <Avatar initials={m.avatar} uri={m.avatarUrl} size={26} />
                           <StatusDot status={m.status} />
                         </View>
                         <View style={{ flex: 1, minWidth: 0 }}>
                           <Text style={{ color: nameColor, fontWeight: "600", fontSize: 12.5 }} numberOfLines={1}>
                             {m.name}
                           </Text>
+                          {/* HU-5 de perfil: el estado personalizado reemplaza la etiqueta de presencia. */}
                           <Text style={{ color: "#8DA8AC", fontSize: 10 }} numberOfLines={1}>
-                            {STATUS_LABELS[m.status]}
+                            {m.customStatus || STATUS_LABELS[m.status]}
                           </Text>
                         </View>
                         {/* Per-member actions (HU-3 roles, HU-7 transfer, HU-25
@@ -4364,14 +5305,111 @@ export default function ChatScreen() {
 
       {/* Delete-server confirmation (HU-6 / #97) */}
       <ReportModal target={reportTarget} onClose={() => setReportTarget(null)} />
+      {/* HU-4/HU-5 en mobile: el long press sobre un mensaje abre sus acciones. */}
+      <ModalShell
+        visible={!!messageActionsTarget}
+        onClose={() => setMessageActionsTarget(null)}
+        title="Acciones del mensaje"
+        maxWidth={360}
+      >
+        <View style={{ gap: 8 }}>
+          {messageActionsTarget && canEditMessage(messageActionsTarget) ? (
+            <PressableScale
+              onPress={() => startEditMessage(messageActionsTarget)}
+              accessibilityLabel="Editar mensaje"
+              style={{ flexDirection: "row", alignItems: "center", gap: 10, padding: 12, borderRadius: 10, backgroundColor: "rgba(255,255,255,0.06)" }}
+            >
+              <Ionicons name="create-outline" size={16} color="#8DE9DC" />
+              <Text style={{ color: "#E6F3F3", fontSize: 13, fontWeight: "700" }}>Editar</Text>
+            </PressableScale>
+          ) : null}
+          {messageActionsTarget && canDeleteMessage(messageActionsTarget) ? (
+            <PressableScale
+              onPress={() => askDeleteMessage(messageActionsTarget)}
+              accessibilityLabel="Eliminar mensaje"
+              style={{ flexDirection: "row", alignItems: "center", gap: 10, padding: 12, borderRadius: 10, backgroundColor: "rgba(255,127,114,0.10)" }}
+            >
+              <Ionicons name="trash-outline" size={16} color="#FF9E94" />
+              <Text style={{ color: "#FF9E94", fontSize: 13, fontWeight: "700" }}>Eliminar</Text>
+            </PressableScale>
+          ) : null}
+          {messageActionsTarget && canReportMessage(messageActionsTarget) ? (
+            <PressableScale
+              onPress={() => {
+                const target = messageActionsTarget
+                setMessageActionsTarget(null)
+                reportMessage(target)
+              }}
+              accessibilityLabel="Reportar mensaje"
+              style={{ flexDirection: "row", alignItems: "center", gap: 10, padding: 12, borderRadius: 10, backgroundColor: "rgba(255,255,255,0.06)" }}
+            >
+              <Ionicons name="flag-outline" size={16} color="#FF9E94" />
+              <Text style={{ color: "#E6F3F3", fontSize: 13, fontWeight: "700" }}>Reportar</Text>
+            </PressableScale>
+          ) : null}
+        </View>
+      </ModalShell>
+      <ModalShell
+        visible={!!deleteTarget}
+        onClose={() => {
+          if (!deleteBusy) setDeleteTarget(null)
+        }}
+        title="Eliminar mensaje"
+        subtitle={
+          deleteTarget && deleteTarget.authorId !== user?.id
+            ? `Vas a eliminar un mensaje de ${deleteTarget.author}. Deja de verse para todos.`
+            : "El mensaje deja de verse para todos. No se puede deshacer."
+        }
+        maxWidth={420}
+      >
+        {deleteTarget ? (
+          <View style={{ padding: 10, borderRadius: 8, backgroundColor: "rgba(255,255,255,0.05)", marginBottom: 12 }}>
+            <Text style={{ color: "#8DA8AC", fontSize: 11, fontWeight: "700", marginBottom: 2 }}>{deleteTarget.author}</Text>
+            <Text style={{ color: "#E6F3F3", fontSize: 12.5 }} numberOfLines={4}>
+              {deleteTarget.text}
+            </Text>
+          </View>
+        ) : null}
+        {deleteError ? <Text style={{ color: "#FF9E94", fontSize: 12, marginBottom: 10 }}>{deleteError}</Text> : null}
+        <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 8 }}>
+          <PressableScale
+            onPress={() => setDeleteTarget(null)}
+            disabled={deleteBusy}
+            accessibilityLabel="Cancelar"
+            style={{ paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8, backgroundColor: "rgba(255,255,255,0.08)" }}
+          >
+            <Text style={{ color: "#E6F3F3", fontSize: 12.5, fontWeight: "700" }}>Cancelar</Text>
+          </PressableScale>
+          <PressableScale
+            onPress={() => void confirmDeleteMessage()}
+            disabled={deleteBusy}
+            accessibilityLabel="Confirmar eliminación"
+            style={{ paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8, backgroundColor: "#FF7F72", opacity: deleteBusy ? 0.6 : 1 }}
+          >
+            {deleteBusy ? (
+              <ActivityIndicator size="small" color="#0B1822" />
+            ) : (
+              <Text style={{ color: "#0B1822", fontSize: 12.5, fontWeight: "800" }}>Eliminar</Text>
+            )}
+          </PressableScale>
+        </View>
+      </ModalShell>
       <ServerReportsModal
         visible={serverReportsOpen}
         serverId={activeServer}
         serverName={activeServerName}
         nameOf={(id) => roles.flatMap((r) => r.members).find((m) => m.id === id)?.name ?? null}
         channelNameOf={(id) => categories.flatMap((c) => c.channels).find((c) => c.id === id)?.name ?? null}
+        canDeleteMessages={canDeleteReportedMessages}
+        canManageWords={canMute}
         onClose={() => setServerReportsOpen(false)}
         onChanged={refreshPendingReports}
+      />
+      <ServerMetricsModal
+        visible={serverMetricsOpen}
+        serverId={activeServer}
+        serverName={activeServerName}
+        onClose={() => setServerMetricsOpen(false)}
       />
 
       <DeleteServerModal
@@ -4518,6 +5556,154 @@ export default function ChatScreen() {
             <Text style={PRIMARY_TXT}>Transferir</Text>
           )}
         </PressableScale>
+      </ModalShell>
+
+      {/* Temporary mute (HU-60) */}
+      <ModalShell
+        visible={!!muteTarget}
+        onClose={() => setMuteTarget(null)}
+        title="Silenciar miembro"
+        subtitle="No va a poder enviar mensajes ni hablar en los canales de voz del servidor hasta que termine el silencio. Sigue siendo miembro y puede leer y escuchar."
+      >
+        <Text style={{ color: "#8DA8AC", fontSize: 13, lineHeight: 19, marginBottom: 12 }}>
+          ¿Por cuánto tiempo querés silenciar a{" "}
+          <Text style={{ color: "#E6F3F3", fontWeight: "700" }}>{muteTarget?.name ?? ""}</Text>?
+        </Text>
+
+        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6, marginBottom: 14 }}>
+          {MUTE_DURATIONS.map((option) => {
+            const selected = option.seconds === muteSeconds
+            return (
+              <PressableScale
+                key={option.seconds}
+                onPress={() => setMuteSeconds(option.seconds)}
+                disabled={muteBusy}
+                style={{
+                  borderRadius: 9999,
+                  paddingHorizontal: 12,
+                  paddingVertical: 7,
+                  borderWidth: 1,
+                  borderColor: selected ? "#37D6C0" : "rgba(255,255,255,0.12)",
+                  backgroundColor: selected ? "rgba(55,214,192,0.16)" : "rgba(255,255,255,0.04)",
+                }}
+              >
+                <Text style={{ color: selected ? "#E6F3F3" : "#8DA8AC", fontSize: 12.5, fontWeight: "600" }}>
+                  {option.label}
+                </Text>
+              </PressableScale>
+            )
+          })}
+        </View>
+
+        {muteError ? (
+          <View style={NOTICE_ERROR}>
+            <Text style={{ color: "#FF9E94", fontSize: 12.5 }}>{muteError}</Text>
+          </View>
+        ) : null}
+
+        <Text style={LABEL}>Motivo (opcional)</Text>
+        <TextInput
+          value={muteReason}
+          onChangeText={setMuteReason}
+          placeholder="Por ejemplo: spam"
+          placeholderTextColor="#5E7E82"
+          maxLength={500}
+          style={[FIELD, { marginBottom: 18 }]}
+        />
+
+        <View style={{ flexDirection: "row", gap: 8 }}>
+          <PressableScale
+            onPress={() => setMuteTarget(null)}
+            disabled={muteBusy}
+            hoverStyle={{ backgroundColor: "rgba(255,255,255,0.10)" }}
+            style={{
+              flex: 1,
+              borderRadius: 10,
+              paddingVertical: 12,
+              alignItems: "center",
+              borderWidth: 1,
+              borderColor: "rgba(255,255,255,0.10)",
+              backgroundColor: "rgba(255,255,255,0.06)",
+            }}
+          >
+            <Text style={{ color: "#E6F3F3", fontWeight: "700", fontSize: 14 }}>Cancelar</Text>
+          </PressableScale>
+          <PressableScale
+            onPress={handleMute}
+            disabled={muteBusy}
+            style={{
+              flex: 1,
+              borderRadius: 10,
+              paddingVertical: 12,
+              alignItems: "center",
+              backgroundColor: "#F5C26B",
+              opacity: muteBusy ? 0.7 : 1,
+            }}
+          >
+            {muteBusy ? (
+              <ActivityIndicator color="#04211D" />
+            ) : (
+              <Text style={{ fontWeight: "700", fontSize: 14, color: "#04211D" }}>Silenciar</Text>
+            )}
+          </PressableScale>
+        </View>
+      </ModalShell>
+
+      {/* Kick confirmation (HU-59) */}
+      <ModalShell
+        visible={!!kickTarget}
+        onClose={() => setKickTarget(null)}
+        title="Expulsar miembro"
+        subtitle="Va a perder el acceso al servidor y a sus canales, pero puede volver a unirse con una nueva invitación."
+      >
+        <Text style={{ color: "#8DA8AC", fontSize: 13, lineHeight: 19, marginBottom: 16 }}>
+          ¿Seguro que querés expulsar a{" "}
+          <Text style={{ color: "#E6F3F3", fontWeight: "700" }}>{kickTarget?.name ?? ""}</Text> de{" "}
+          <Text style={{ color: "#E6F3F3", fontWeight: "700" }}>{activeServerName || "este servidor"}</Text>?
+        </Text>
+
+        {kickError ? (
+          <View style={NOTICE_ERROR}>
+            <Text style={{ color: "#FF9E94", fontSize: 12.5 }}>{kickError}</Text>
+          </View>
+        ) : null}
+
+        <View style={{ flexDirection: "row", gap: 8 }}>
+          <PressableScale
+            onPress={() => setKickTarget(null)}
+            disabled={kickBusy}
+            hoverStyle={{ backgroundColor: "rgba(255,255,255,0.10)" }}
+            style={{
+              flex: 1,
+              borderRadius: 10,
+              paddingVertical: 12,
+              alignItems: "center",
+              borderWidth: 1,
+              borderColor: "rgba(255,255,255,0.10)",
+              backgroundColor: "rgba(255,255,255,0.06)",
+            }}
+          >
+            <Text style={{ color: "#E6F3F3", fontWeight: "700", fontSize: 14 }}>Cancelar</Text>
+          </PressableScale>
+          <PressableScale
+            onPress={handleKick}
+            disabled={kickBusy}
+            style={{
+              flex: 1,
+              borderRadius: 10,
+              paddingVertical: 12,
+              alignItems: "center",
+              backgroundColor: "#FF7F72",
+              opacity: kickBusy ? 0.7 : 1,
+            }}
+          >
+            {kickBusy ? (
+              <ActivityIndicator color="#04211D" />
+            ) : (
+              <Text style={{ fontWeight: "700", fontSize: 14, color: "#04211D" }}>Expulsar</Text>
+            )}
+          </PressableScale>
+        </View>
       </ModalShell>
 
       {/* Ban confirmation (HU-25) */}
@@ -4787,7 +5973,7 @@ export default function ChatScreen() {
         </View>
       </ModalShell>
 
-      {/* Lost access to a server (HU-25: banned) */}
+      {/* Lost access to a server (HU-25 banned, HU-59 kicked) */}
       <ModalShell
         visible={!!accessLostNotice}
         onClose={() => setAccessLostNotice("")}
