@@ -425,11 +425,12 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
     callBusyRef.current = true
     try {
       setCallStatus("connecting")
+      const attempt = ++attemptRef.current
       const access = await apiAcceptCall(call.id)
+      if (attemptRef.current !== attempt) return
 
       const abort = new AbortController()
       abortRef.current = abort
-      const attempt = ++attemptRef.current
 
       const handle = await connectVoiceRoom(access.url, access.token, {
         signal: abort.signal,
@@ -476,6 +477,10 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
   // Hang up an active call.
   const endCurrentCall = useCallback(async () => {
     if (!call) return
+    attemptRef.current++
+    abortRef.current?.abort()
+    abortRef.current = null
+    callBusyRef.current = false
     try {
       await apiEndCall(call.id)
     } catch {

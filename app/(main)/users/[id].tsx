@@ -224,7 +224,7 @@ export default function PublicProfileScreen() {
 
                 {/* Identity (no email: public profiles carry no private data) */}
                 <View style={{ alignItems: "center", marginBottom: 20 }}>
-                  <Text style={{ color: "#F2FAFA", fontSize: 21, fontWeight: "800", letterSpacing: -0.3 }}>
+                  <Text style={{ color: "#F2FAFA", fontSize: 21, fontWeight: "800", letterSpacing: -0.3, textAlign: "center" }}>
                     {profile.name}
                   </Text>
                   <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 6 }}>

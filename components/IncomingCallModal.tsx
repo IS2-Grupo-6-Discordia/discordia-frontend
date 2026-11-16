@@ -54,7 +54,7 @@ export default function IncomingCallModal() {
   const peerName = call?.peerName ?? "Alguien"
 
   return (
-    <Modal visible={visible} transparent animationType="fade">
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={handleReject}>
       <View
         style={{
           flex: 1,

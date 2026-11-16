@@ -13,6 +13,7 @@ import {
   Image,
   Modal,
   useWindowDimensions,
+  BackHandler,
 } from "react-native"
 import type { ViewStyle, TextStyle } from "react-native"
 import * as ImagePicker from "expo-image-picker"
@@ -115,6 +116,7 @@ import type {
 } from "@/lib/api/types"
 import { formatMuteEnd, hasServerPermission, isMutedAt } from "@/lib/api/types"
 import { ApiError, friendlyError } from "@/lib/api/client"
+import { initials } from "@/lib/api/auth"
 import { useAuth } from "@/context/AuthContext"
 import { useVoice } from "@/context/VoiceContext"
 import type { VoiceParticipant } from "@/context/VoiceContext"
@@ -1133,6 +1135,22 @@ export default function ChatScreen() {
     for (const group of roles) for (const m of group.members) if (m.avatarUrl) map.set(m.id, m.avatarUrl)
     return map
   }, [roles])
+
+  useEffect(() => {
+    if (Platform.OS !== "android" || !isNarrow) return
+    const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+      if (showMembers) {
+        setShowMembers(false)
+        return true
+      }
+      if (mobilePane === "chat") {
+        setMobilePane("channels")
+        return true
+      }
+      return false
+    })
+    return () => sub.remove()
+  }, [isNarrow, showMembers, mobilePane])
 
   const unreadDivider = useMemo(() => {
     if (!unreadMark || unreadMark.channelId !== viewedChannel) return null
@@ -4167,7 +4185,7 @@ export default function ChatScreen() {
             )
           }
           renderItem={({ item: msg }) => {
-            const authorInitials = msg.author.split(" ").map((n) => n[0]).join("")
+            const authorInitials = initials(msg.author)
             // Only wire navigation when the message carries a public author id.
             // Mock messages don't, so their authors stay non-tappable for now.
             const goToAuthor = msg.authorId
@@ -4183,17 +4201,12 @@ export default function ChatScreen() {
               !!user?.id &&
               msg.authorId !== user.id &&
               (msg.mentionsEveryone === true || (msg.mentionedUserIds?.includes(user.id) ?? false))
-            const showReport = reportable && Platform.OS === "web"
+            const showReport = reportable && Platform.OS === "web" && !isNarrow
             const editable = canEditMessage(msg)
             const deletable = canDeleteMessage(msg)
             const isEditing = editingMessageId === msg.id
             const showActions = Platform.OS === "web" && !isEditing && hoveredMessage === msg.id
-            const onLongPressMessage =
-              editable || deletable
-                ? () => setMessageActionsTarget(msg)
-                : reportable
-                  ? () => reportMessage(msg)
-                  : undefined
+            const onLongPressMessage = editable || deletable || reportable ? () => setMessageActionsTarget(msg) : undefined
             const row = (
             <Pressable
               onLongPress={isEditing ? undefined : onLongPressMessage}
@@ -4250,7 +4263,7 @@ export default function ChatScreen() {
                   ) : null}
                   <Text style={{ color: "#8DA8AC", fontSize: 10 }}>{msg.time}</Text>
                   {msg.edited ? <Text style={{ color: "#8DA8AC", fontSize: 9.5 }}>(editado)</Text> : null}
-                  {Platform.OS === "web" && !isEditing && (editable || deletable) ? (
+                  {Platform.OS === "web" && !isNarrow && !isEditing && (editable || deletable) ? (
                     <View
                       style={{
                         marginLeft: "auto",
