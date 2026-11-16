@@ -170,7 +170,7 @@ export default function ServerReportsModal({
           </Text>
         </View>
       ) : (
-        <ScrollView style={{ maxHeight: 460 }} contentContainerStyle={{ gap: 10 }}>
+        <ScrollView nestedScrollEnabled style={{ maxHeight: 460 }} contentContainerStyle={{ gap: 10 }}>
           {reports.map((r) => {
             const channelName = r.channelId ? channelNameOf(r.channelId) : null
             return (

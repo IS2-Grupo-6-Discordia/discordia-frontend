@@ -80,7 +80,7 @@ function StatTile({ icon, label, value, hint }: { icon: keyof typeof Ionicons.gl
     >
       <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
         <Ionicons name={icon} size={13} color="#8DA8AC" />
-        <Text style={{ color: "#8DA8AC", fontSize: 11.5, fontWeight: "700" }}>{label}</Text>
+        <Text style={{ flexShrink: 1, color: "#8DA8AC", fontSize: 11.5, fontWeight: "700" }}>{label}</Text>
       </View>
       <Text style={{ color: "#F2FAFA", fontSize: 24, fontWeight: "800", letterSpacing: -0.5 }}>{value.toLocaleString("es-AR")}</Text>
       {hint ? <Text style={{ color: "#5E7E82", fontSize: 11 }}>{hint}</Text> : null}

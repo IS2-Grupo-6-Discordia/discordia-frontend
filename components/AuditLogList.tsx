@@ -163,7 +163,7 @@ export default function AuditLogList({ serverId, memberName }: AuditLogListProps
           </Text>
         </View>
       ) : (
-        <ScrollView style={{ maxHeight: 460 }}>
+        <ScrollView nestedScrollEnabled style={{ maxHeight: 460 }}>
           {entries.map((e, i) => {
             const meta = ACTIONS[e.action] ?? { icon: "ellipse-outline" as const, color: "#8DA8AC", verb: e.action }
             const detail = detailText(e)

@@ -144,7 +144,7 @@ export default function BannedWordsList({ serverId }: BannedWordsListProps) {
           <Text style={META}>
             {words.length} de {BANNED_WORDS_MAX_PER_SERVER} palabras
           </Text>
-          <ScrollView style={{ maxHeight: 360 }} contentContainerStyle={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+          <ScrollView nestedScrollEnabled style={{ maxHeight: 360 }} contentContainerStyle={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
             {words.map((w) => (
               <View key={w.word} style={CHIP}>
                 <Text style={{ color: "#E6F3F3", fontSize: 13, fontWeight: "600" }}>{w.word}</Text>
