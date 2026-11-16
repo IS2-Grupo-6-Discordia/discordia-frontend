@@ -103,7 +103,7 @@ export default function RolePermissionsModal({
         </View>
       ) : null}
 
-      <ScrollView style={{ maxHeight: 320 }}>
+      <ScrollView nestedScrollEnabled style={{ maxHeight: 320 }}>
         {PERMISSION_OPTIONS.map((perm) => {
           // Every permission other than Administrator itself is implied while
           // Administrator is on: shown checked and locked, but left out of the draft.

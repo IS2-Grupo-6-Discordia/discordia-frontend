@@ -90,7 +90,7 @@ export default function MemberRolesModal({
           <Text style={{ color: "#5E7E82", fontSize: 13 }}>Este servidor no tiene roles.</Text>
         </View>
       ) : (
-        <ScrollView style={{ maxHeight: 320 }}>
+        <ScrollView nestedScrollEnabled style={{ maxHeight: 320 }}>
           {roles.map((role) => {
             const checked = assigned.includes(role.id)
             const busy = busyRoleId === role.id

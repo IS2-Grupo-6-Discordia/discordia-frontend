@@ -110,7 +110,7 @@ export default function AuditLogList({ serverId, memberName }: AuditLogListProps
 
   return (
     <View>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6, marginBottom: 12 }}>
+      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6, marginBottom: 12 }}>
         {FILTERS.map((f) => {
           const selected = group === f.value
           return (
@@ -132,7 +132,7 @@ export default function AuditLogList({ serverId, memberName }: AuditLogListProps
             </Pressable>
           )
         })}
-      </ScrollView>
+      </View>
 
       {error ? (
         <View
@@ -163,7 +163,7 @@ export default function AuditLogList({ serverId, memberName }: AuditLogListProps
           </Text>
         </View>
       ) : (
-        <ScrollView style={{ maxHeight: 460 }}>
+        <ScrollView nestedScrollEnabled style={{ maxHeight: 460 }}>
           {entries.map((e, i) => {
             const meta = ACTIONS[e.action] ?? { icon: "ellipse-outline" as const, color: "#8DA8AC", verb: e.action }
             const detail = detailText(e)

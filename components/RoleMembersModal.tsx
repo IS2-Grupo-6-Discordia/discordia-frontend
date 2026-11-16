@@ -48,7 +48,7 @@ export default function RoleMembersModal({
           <Text style={{ color: "#5E7E82", fontSize: 13 }}>Ningún miembro tiene este rol.</Text>
         </View>
       ) : (
-        <ScrollView style={{ maxHeight: 320 }}>
+        <ScrollView nestedScrollEnabled style={{ maxHeight: 320 }}>
           {members.map((member) => (
             <View key={member.userId} style={MEMBER_ROW}>
               <Avatar initials={member.avatar} size={28} uri={member.avatarUrl} />

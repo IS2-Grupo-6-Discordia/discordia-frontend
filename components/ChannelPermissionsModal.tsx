@@ -182,7 +182,7 @@ export default function ChannelPermissionsModal({
           <Text style={{ color: "#5E7E82", fontSize: 13 }}>Este servidor no tiene roles.</Text>
         </View>
       ) : (
-        <ScrollView style={{ maxHeight: 360 }}>
+        <ScrollView nestedScrollEnabled style={{ maxHeight: 360 }}>
           {roles.map((role) => {
             const editing = editingId === role.id
             const busy = busyRoleId === role.id

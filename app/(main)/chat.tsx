@@ -13,6 +13,7 @@ import {
   Image,
   Modal,
   useWindowDimensions,
+  BackHandler,
 } from "react-native"
 import type { ViewStyle, TextStyle } from "react-native"
 import * as ImagePicker from "expo-image-picker"
@@ -79,11 +80,16 @@ import {
   markAllRead,
   withoutChannel,
   withoutServer,
-  getMutes,
-  setChannelMuted,
-  setServerMuted,
-  withMute,
-  EMPTY_MUTES,
+  getNotificationHistory,
+  timeAgo,
+  getNotificationPrefs,
+  setNotificationLevel,
+  withLevel,
+  channelLevel,
+  serverLevel,
+  levelLabel,
+  NOTIFICATION_LEVELS,
+  EMPTY_PREFS,
   extractMentionIds,
   extractRoleMentionIds,
   hasEveryoneMention,
@@ -94,6 +100,7 @@ import {
 } from "@/lib/api"
 import type { MentionSuggestion, MentionRole } from "@/lib/api/mentions"
 import type {
+  AppNotification,
   Server,
   Category,
   RoleGroup,
@@ -107,10 +114,12 @@ import type {
   ServerBan,
   MyServerPermissions,
   UnreadSummary,
-  MuteState,
+  NotificationPrefs,
+  NotificationLevel,
 } from "@/lib/api/types"
 import { formatMuteEnd, hasServerPermission, isMutedAt } from "@/lib/api/types"
 import { ApiError, friendlyError } from "@/lib/api/client"
+import { initials } from "@/lib/api/auth"
 import { useAuth } from "@/context/AuthContext"
 import { useVoice } from "@/context/VoiceContext"
 import type { VoiceParticipant } from "@/context/VoiceContext"
@@ -311,6 +320,10 @@ const MENTION_FORBIDDEN_MESSAGE = "No tenés permiso para mencionar a todo el se
 const MESSAGE_MAX = 4000
 // HU-6 CA1: page size for loading older history, matching useChannelMessages' PAGE_LIMIT.
 const HISTORY_PAGE = 50
+// Most recently visited channels whose messages are kept in memory for an instant
+// repaint on switch (fix/channel-switch-instant). Bounded so the cache can't grow
+// unbounded; not persisted and cleared on server change / logout.
+const CHANNEL_CACHE_LIMIT = 20
 // A partir de acá mostramos el contador, para no distraer en mensajes cortos.
 const MESSAGE_COUNTER_FROM = MESSAGE_MAX - 200
 
@@ -413,14 +426,63 @@ export default function ChatScreen() {
   // arrive after the user switched channels.
   const activeChannelRef = useRef(activeChannel)
   activeChannelRef.current = activeChannel
+  // Switch-to-channel UX (fix/channel-switch-instant): `loadingMessages` is true
+  // while the first page of a channel with no cached copy is in flight (so a
+  // loader shows instead of the "no messages yet" empty state), and
+  // `messagesError` offers a retry when that first GET fails. Both are separate
+  // from historyError, which is the older-page (HU-6) pagination error.
+  const [loadingMessages, setLoadingMessages] = useState(false)
+  const [messagesError, setMessagesError] = useState(false)
+  // Only reveal the "Cargando mensajes…" text if the first page is still in flight
+  // after a short grace period. A prefetched or warm channel answers well under it,
+  // so switching channels never flashes a loader — it just shows the messages.
+  const [showLoader, setShowLoader] = useState(false)
+  // True while a server switch is fetching the new server's channel list. The old
+  // channel is cleared immediately (so the previous server's messages never linger),
+  // and this keeps the chat pane on a loader instead of flashing the empty state
+  // until the new server's first channel is selected.
+  const [loadingChannels, setLoadingChannels] = useState(false)
+  // Bumped by "Reintentar" to re-run the channel load without changing channel.
+  const [reloadToken, setReloadToken] = useState(0)
+  // In-memory, per-channel cache of the last messages shown, so switching back to
+  // a visited channel paints instantly while the GET revalidates behind it. Not
+  // persisted; cleared on server change / logout; LRU-bounded to CHANNEL_CACHE_LIMIT.
+  // messagesChannelRef is the channel the current `messages` reflect, so an update
+  // still in flight for the previous channel is cached under that channel, not the
+  // one just opened.
+  const channelCacheRef = useRef<Map<string, Message[]>>(new Map())
+  const messagesChannelRef = useRef<string>("")
+  const putCache = useCallback((channelId: string, msgs: Message[]) => {
+    if (!UUID_RE.test(channelId)) return // only real channels are cached
+    const cache = channelCacheRef.current
+    cache.delete(channelId) // re-insert so this channel becomes most-recently-used
+    cache.set(channelId, msgs)
+    while (cache.size > CHANNEL_CACHE_LIMIT) {
+      const oldest = cache.keys().next().value
+      if (oldest === undefined) break
+      cache.delete(oldest)
+    }
+  }, [])
   const [unread, setUnread] = useState<UnreadSummary>(EMPTY_UNREAD)
   // "Marcar todo como leído" también apaga los indicadores de demostración del servidor de
   // ejemplo, que no vienen del backend. Mientras el pedido está en vuelo, el polling no pisa el
   // resumen ya vaciado.
   const [demoCleared, setDemoCleared] = useState(false)
   const markingAllRef = useRef(false)
-  const [mutes, setMutes] = useState<MuteState>(EMPTY_MUTES)
-  const mutingRef = useRef(0)
+  // Preferencias de notificación (HU-4): qué actividad avisa cada canal y servidor.
+  const [prefs, setPrefs] = useState<NotificationPrefs>(EMPTY_PREFS)
+  const savingPrefsRef = useRef(0)
+
+  // Centro de notificaciones (HU-5): historial de las menciones recientes en un solo lugar.
+  const [notifOpen, setNotifOpen] = useState(false)
+  const [notifItems, setNotifItems] = useState<AppNotification[]>([])
+  const [notifDays, setNotifDays] = useState(7)
+  const [notifLoading, setNotifLoading] = useState(false)
+  const [notifError, setNotifError] = useState("")
+  const [notifChannelNames, setNotifChannelNames] = useState<Record<string, string>>({})
+  // Canal que hay que abrir cuando termina de cargar el servidor al que se saltó desde una
+  // notificación (si no, se abriría el primer canal de texto).
+  const pendingChannelRef = useRef("")
   const reloadUnreadRef = useRef<(() => void) | null>(null)
 
   // Add-server modal (HU-1 create / HU-3 join)
@@ -690,24 +752,45 @@ export default function ChatScreen() {
       setCategories([])
       setRoles([])
       setActiveChannel("")
+      setLoadingChannels(false)
       return
     }
     if (activeSuspended) {
       setCategories([])
       setRoles([])
       setActiveChannel("")
+      setLoadingChannels(false)
       return
     }
+    // Clear the previous server's channel and messages right away so they never linger
+    // on screen while the new server's channel list is in flight (the message-load
+    // effect keys on activeChannel, so without this the old messages stay until it
+    // reloads). messagesChannelRef is reset first so the cache-sync effect does not
+    // store the emptied list under the old channel. loadingChannels keeps the chat pane
+    // on a loader instead of the empty state.
+    messagesChannelRef.current = ""
+    setMessages([])
+    setActiveChannel("")
+    setLoadingChannels(true)
+    // Clear the previous server's member roster too, so the "Miembros" panel never
+    // shows the old server's members/count until getServerMembers resolves (mirrors
+    // the setMentionRoles([]) reset below).
+    setRoles([])
     getCategories(activeServer)
       .then((cats) => {
         setCategories(cats)
-        const firstText = cats.flatMap((c) => c.channels).find((c) => c.type === "text")
-        setActiveChannel(firstText ? firstText.id : "")
+        const textChannels = cats.flatMap((c) => c.channels).filter((c) => c.type === "text")
+        const pending = pendingChannelRef.current
+        pendingChannelRef.current = ""
+        const target = textChannels.find((c) => c.id === pending) ?? textChannels[0]
+        setActiveChannel(target ? target.id : "")
+        setLoadingChannels(false)
       })
       .catch((err) => {
         if (err instanceof ApiError && err.status === 423) setServerSuspended(activeServer, true)
         setCategories([])
         setActiveChannel("")
+        setLoadingChannels(false)
       })
     // Real roster from the backend (owner + members), hydrated with names/avatars.
     getServerMembers(activeServer)
@@ -769,31 +852,94 @@ export default function ChatScreen() {
     setLoadingOlder(false)
     setHistoryError(false)
     setHasMoreHistory(false)
+    setMessagesError(false)
     if (!activeChannel) {
+      messagesChannelRef.current = ""
       setMessages([])
+      setLoadingMessages(false)
       return
     }
+    const channelId = activeChannel
+    const isReal = UUID_RE.test(channelId)
+    messagesChannelRef.current = channelId
+    // Cache hit: repaint the last messages seen for this channel instantly, then
+    // revalidate behind it. Cache miss: clear the list and show a loader (never
+    // the "no messages yet" empty state) until the GET answers.
+    const cached = isReal ? channelCacheRef.current.get(channelId) : undefined
+    if (cached) {
+      setMessages(cached)
+      setLoadingMessages(false)
+      setHasMoreHistory(cached.length >= HISTORY_PAGE)
+    } else {
+      setMessages([])
+      setLoadingMessages(isReal)
+    }
     let active = true
-    getMessages(activeChannel)
+    getMessages(channelId)
       .then((msgs) => {
         // Descartar una respuesta que llega tarde de un canal anterior: no puede
         // meter mensajes en el canal abierto ahora.
         if (!active) return
-        setMessages(msgs)
+        // On a hit, fuse the fresh page into what is shown (union by id, so live
+        // frames and already-paged older messages survive); on a miss, replace.
+        if (cached) mergeMessages(msgs)
+        else setMessages(msgs)
         // A full first page on a real channel means there may be older messages
         // to page back through; mock/example channels never paginate.
-        setHasMoreHistory(UUID_RE.test(activeChannel) && msgs.length >= HISTORY_PAGE)
+        setHasMoreHistory(isReal && msgs.length >= HISTORY_PAGE)
+        setLoadingMessages(false)
+        setMessagesError(false)
       })
       .catch((err) => {
         if (!active) return
         // Un 423 del GET del historial activa la UI de servidor suspendido.
         if (err instanceof ApiError && err.status === 423) setServerSuspended(activeServer, true)
-        setMessages([])
+        // Con algo cacheado se deja lo que ya se ve; sin nada, se ofrece reintentar.
+        if (!cached) {
+          setMessages([])
+          setMessagesError(true)
+        }
+        setLoadingMessages(false)
       })
     return () => {
       active = false
     }
-  }, [activeChannel])
+  }, [activeChannel, reloadToken])
+
+  // The cache is per server: drop it when the active server changes (channel ids
+  // differ between servers) and on logout (user gone), so a previous context's
+  // messages never repaint in a new one.
+  useEffect(() => {
+    channelCacheRef.current.clear()
+  }, [activeServer, user?.id])
+
+  // Prefetch the first page of every real text channel as soon as the channel list
+  // loads, so switching channels is an instant cache hit instead of a GET-then-loader.
+  // A seed only fills an empty cache slot: it never clobbers the list the user is
+  // actively viewing or revalidating, and a failed prefetch just leaves that channel
+  // to load on demand. Guarded by `active` so a response from a previous server (after
+  // the cache was cleared) is discarded instead of seeding the new one.
+  useEffect(() => {
+    if (!activeServer || !isRealServerId(activeServer) || activeSuspended) return
+    const textChannelIds = categories
+      .flatMap((c) => c.channels)
+      .filter((ch) => ch.type === "text" && UUID_RE.test(ch.id))
+      .map((ch) => ch.id)
+    if (textChannelIds.length === 0) return
+    let active = true
+    for (const channelId of textChannelIds) {
+      if (channelCacheRef.current.has(channelId)) continue
+      getMessages(channelId)
+        .then((msgs) => {
+          if (!active) return
+          if (!channelCacheRef.current.has(channelId)) putCache(channelId, msgs)
+        })
+        .catch(() => {})
+    }
+    return () => {
+      active = false
+    }
+  }, [activeServer, activeSuspended, categories, putCache])
 
   // --- Indicadores de no leído (CA1 canal, CA2 servidor, CA3 menciones) ---
   // Solo los servidores reales (id UUID) tienen mensajes en el backend.
@@ -850,6 +996,33 @@ export default function ChatScreen() {
     const gone = new Set(ids)
     setMessages((prev) => (prev.some((m) => gone.has(m.id)) ? prev.filter((m) => !gone.has(m.id)) : prev))
   }, [])
+
+  // Keep the per-channel cache in step with what is on screen: every update to
+  // `messages` (live messages.created frame, reconcile, paged history, send, edit,
+  // delete) stores the current list under the channel it belongs to, so switching
+  // back repaints it instantly (CA4). messagesChannelRef — not activeChannel — is
+  // used so an update still in flight for the previous channel is stored under that
+  // channel, not the one just opened. Only cache a channel whose list is actually
+  // loaded: never while its first page is still loading or after its GET failed, or
+  // a channel left mid-load would be cached as [] and show "no messages yet" next
+  // time instead of loading again.
+  useEffect(() => {
+    if (loadingMessages || messagesError) return
+    const channelId = messagesChannelRef.current
+    if (channelId) putCache(channelId, messages)
+  }, [messages, loadingMessages, messagesError, putCache])
+
+  // Grace period before the loader text shows: a prefetched/warm channel resolves
+  // well under it, so a channel switch paints the messages with no loader flash. The
+  // text only appears if the first page is genuinely slow (e.g. a cold backend).
+  useEffect(() => {
+    if (!loadingMessages && !loadingChannels) {
+      setShowLoader(false)
+      return
+    }
+    const timer = setTimeout(() => setShowLoader(true), 300)
+    return () => clearTimeout(timer)
+  }, [loadingMessages, loadingChannels])
 
   // The latest page (60 s reconcile / fallback poll) is authoritative for its
   // time window: a loaded message inside it that the backend no longer returns
@@ -967,18 +1140,18 @@ export default function ChatScreen() {
   useEffect(() => {
     if (!realServerIds) {
       setUnread(EMPTY_UNREAD)
-      setMutes(EMPTY_MUTES)
+      setPrefs(EMPTY_PREFS)
       return
     }
     let active = true
-    const loadMutes = () =>
-      getMutes(realServerIds.split(","))
-        .then((state) => {
-          if (active && mutingRef.current === 0) setMutes(state)
+    const loadPrefs = () =>
+      getNotificationPrefs(realServerIds.split(","))
+        .then((loaded) => {
+          if (active && savingPrefsRef.current === 0) setPrefs(loaded)
         })
         .catch(() => undefined)
     const load = () => {
-      loadMutes()
+      loadPrefs()
       return getUnreadSummary(realServerIds.split(","))
         .then((summary) => {
           if (!active || markingAllRef.current) return
@@ -1047,6 +1220,22 @@ export default function ChatScreen() {
     return map
   }, [roles])
 
+  useEffect(() => {
+    if (Platform.OS !== "android" || !isNarrow) return
+    const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+      if (showMembers) {
+        setShowMembers(false)
+        return true
+      }
+      if (mobilePane === "chat") {
+        setMobilePane("channels")
+        return true
+      }
+      return false
+    })
+    return () => sub.remove()
+  }, [isNarrow, showMembers, mobilePane])
+
   const unreadDivider = useMemo(() => {
     if (!unreadMark || unreadMark.channelId !== viewedChannel) return null
     let firstId = ""
@@ -1096,25 +1285,31 @@ export default function ChatScreen() {
 
   // Lo que se pinta para un canal o servidor: el resumen del backend, y para el servidor de
   // ejemplo los valores de demostración que ya traía.
+  // El backend ya arma el resumen según las preferencias; acá además se aplica el nivel del canal
+  // para que un cambio recién hecho se vea al instante, sin esperar al próximo resumen.
+  // level: el que vale para el canal (la configuración más específica gana: canal, si no servidor).
   const channelUnread = (ch: { id: string; unread?: boolean; mention?: number }) => {
     const u = unread.channels[ch.id]
-    const muted = !!mutes.channels[ch.id] || !!mutes.servers[activeServer]
-    if (demoCleared) return { unread: !!u, mentions: u && !muted ? u.mentions : 0, muted }
-    return {
-      unread: !!u || !!ch.unread,
-      mentions: muted ? 0 : u ? u.mentions : (ch.mention ?? 0),
-      muted,
-    }
+    const level = channelLevel(prefs, activeServer, ch.id)
+    const muted = level === "none"
+    const mentions = u ? u.mentions : demoCleared ? 0 : (ch.mention ?? 0)
+    const hasUnread = u ? true : demoCleared ? false : !!ch.unread
+    if (muted) return { unread: false, mentions: 0, muted, level }
+    if (level === "mentions") return { unread: mentions > 0, mentions, muted, level }
+    return { unread: hasUnread, mentions, muted, level }
   }
+  // Para el servidor manda el resumen del backend: suma solo los canales que notifican, así que un
+  // canal que pidió "todos" en un servidor en "ninguno" igual lo enciende.
   const serverUnread = (s: Server) => {
     const u = unread.servers[s.id]
-    const muted = !!mutes.servers[s.id] || !!u?.muted
-    if (demoCleared) return { unread: !!u, mentions: u && !muted ? u.mentions : 0, muted }
-    return {
-      unread: !!u || !!s.unread || !!s.mention,
-      mentions: muted ? 0 : u ? u.mentions : (s.mention ?? 0),
-      muted,
-    }
+    const level = serverLevel(prefs, s.id)
+    const muted = level === "none"
+    if (u || demoCleared) return { unread: !!u, mentions: u?.mentions ?? 0, muted, level }
+    // Valores de demostración del servidor de ejemplo, filtrados por el nivel.
+    const mentions = s.mention ?? 0
+    if (muted) return { unread: false, mentions: 0, muted, level }
+    if (level === "mentions") return { unread: mentions > 0, mentions, muted, level }
+    return { unread: !!s.unread || !!s.mention, mentions, muted, level }
   }
   const hasAnyUnread = servers.some((s) => serverUnread(s).unread)
 
@@ -1182,21 +1377,71 @@ export default function ChatScreen() {
     })
   }
 
-  const handleToggleMute = (kind: "server" | "channel", id: string, muted: boolean) => {
+  // HU-4 CA1: elegir qué notifica un canal o servidor. `null` quita la configuración propia: el canal
+  // vuelve a la de su servidor y el servidor a "todos los mensajes". Es optimista: se ve al instante
+  // y, si el pedido falla, se restaura lo anterior y se avisa.
+  const handleSetLevel = (kind: "server" | "channel", id: string, level: NotificationLevel | null) => {
     closeServerMenu()
-    setMutes((prev) => withMute(prev, kind, id, muted))
-    mutingRef.current += 1
-    const request = kind === "server" ? setServerMuted(id, muted) : setChannelMuted(id, muted)
-    request
+    const previous = prefs
+    setPrefs((prev) => withLevel(prev, kind, id, level))
+    savingPrefsRef.current += 1
+    setNotificationLevel(kind, id, level)
       .then(() => reloadUnreadRef.current?.())
       .catch((err) => {
-        setMutes((prev) => withMute(prev, kind, id, !muted))
+        setPrefs(previous)
         setBannerError(friendlyError(err))
       })
       .finally(() => {
-        mutingRef.current -= 1
+        savingPrefsRef.current -= 1
       })
   }
+
+  // HU-5: abre el centro de notificaciones y trae las menciones recientes (CA1). Sin menciones la
+  // lista viene vacía y el panel lo indica (CA2).
+  const loadNotifications = async () => {
+    const ids = realServerIds ? realServerIds.split(",") : []
+    setNotifLoading(true)
+    setNotifError("")
+    try {
+      const history = await getNotificationHistory(ids)
+      setNotifItems(history.items)
+      setNotifDays(history.days)
+      // Nombres de canal: el servidor abierto ya los tiene; el resto se pide una vez por servidor.
+      const names: Record<string, string> = {}
+      for (const ch of categories.flatMap((c) => c.channels)) names[ch.id] = ch.name
+      const others = [...new Set(history.items.map((n) => n.serverId))].filter((id) => id !== activeServer)
+      await Promise.all(
+        others.map((id) =>
+          getCategories(id)
+            .then((cats) => {
+              for (const ch of cats.flatMap((c) => c.channels)) names[ch.id] = ch.name
+            })
+            .catch(() => undefined),
+        ),
+      )
+      setNotifChannelNames(names)
+    } catch (err) {
+      setNotifError(friendlyError(err))
+    } finally {
+      setNotifLoading(false)
+    }
+  }
+  const openNotifications = () => {
+    setNotifOpen(true)
+    loadNotifications()
+  }
+  // CA1: acceso directo a la conversación de cada notificación.
+  const openNotification = (n: AppNotification) => {
+    setNotifOpen(false)
+    if (n.serverId === activeServer) {
+      setActiveChannel(n.channelId)
+    } else {
+      pendingChannelRef.current = n.channelId
+      setActiveServer(n.serverId)
+    }
+    if (isNarrow) setMobilePane("chat")
+  }
+  const pendingMentions = servers.reduce((total, s) => total + serverUnread(s).mentions, 0)
 
   // HU-4/HU-5 gating: load the current user's admin permissions for the active
   // real server, so the banner config and role manager can be surfaced to
@@ -3090,7 +3335,7 @@ export default function ChatScreen() {
             <View
               key={s.id}
               {...(Platform.OS === "web"
-                ? { onMouseEnter: showTooltip(s.name, serverUnread(s).muted ? "Silenciado" : undefined), onMouseLeave: hideTooltip }
+                ? { onMouseEnter: showTooltip(s.name, serverUnread(s).level !== "all" ? levelLabel(serverUnread(s).level) : undefined), onMouseLeave: hideTooltip }
                 : {})}
             >
               {activeServer === s.id && (
@@ -3239,7 +3484,48 @@ export default function ChatScreen() {
             </PressableScale>
           </View>
         </ScrollView>
-        {!isNarrow ? (
+        {(
+          <View
+            {...(Platform.OS === "web"
+              ? { onMouseEnter: showTooltip("Notificaciones"), onMouseLeave: hideTooltip }
+              : {})}
+          >
+            <PressableScale
+              onPress={openNotifications}
+              accessibilityLabel={
+                pendingMentions > 0 ? `Notificaciones, ${pendingMentions} menciones sin leer` : "Notificaciones"
+              }
+              pressedScale={0.88}
+              hoverStyle={{ backgroundColor: "rgba(55,214,192,0.14)", borderColor: "rgba(55,214,192,0.55)" }}
+              style={{
+                alignItems: "center",
+                justifyContent: "center",
+                width: 34,
+                height: 34,
+                borderRadius: 15,
+                backgroundColor: "rgba(255,255,255,0.10)",
+                borderWidth: 1,
+                borderColor: "rgba(255,255,255,0.13)",
+              }}
+            >
+              <Ionicons name="notifications-outline" size={17} color="#37D6C0" />
+              {pendingMentions > 0 ? (
+                <View
+                  style={{
+                    position: "absolute",
+                    top: 4,
+                    right: 4,
+                    width: 8,
+                    height: 8,
+                    borderRadius: 4,
+                    backgroundColor: "#FF6B6B",
+                  }}
+                />
+              ) : null}
+            </PressableScale>
+          </View>
+        )}
+        {(
           <View
             {...(Platform.OS === "web"
               ? { onMouseEnter: showTooltip("Marcar todo como leído"), onMouseLeave: hideTooltip }
@@ -3268,7 +3554,7 @@ export default function ChatScreen() {
               <Ionicons name="checkmark-done-outline" size={17} color="#37D6C0" />
             </PressableScale>
           </View>
-        ) : null}
+        )}
       </View>
 
      <Modal visible={serverMenu !== null} transparent animationType="none" onRequestClose={closeServerMenu}>
@@ -3283,7 +3569,8 @@ export default function ChatScreen() {
               style={{
                 position: "absolute",
                 left: Math.max(8, Math.min(serverMenu.x, windowWidth - Math.max(serverMenu.w, 220) - 8)),
-                top: Math.max(8, Math.min(serverMenu.y, windowHeight - (serverMenu.full ? 510 : 120))),
+                // La altura del menú depende de cuántas opciones tenga (el de servidor completo es más largo).
+                top: Math.max(8, Math.min(serverMenu.y, windowHeight - (serverMenu.full ? 600 : 240))),
                 width: Math.max(serverMenu.w, 220),
                 paddingVertical: 6,
                 borderRadius: 10,
@@ -3295,18 +3582,21 @@ export default function ChatScreen() {
               {(() => {
                 const isChannel = serverMenu.kind === "channel"
                 const hasUnreadHere = isChannel ? !!unread.channels[serverMenu.id] : !!unread.servers[serverMenu.id]
-                const isMuted = isChannel ? !!mutes.channels[serverMenu.id] : !!mutes.servers[serverMenu.id]
+                // Nivel configurado para este objetivo (undefined = sin configuración propia) y el
+                // que vale por herencia: un canal sin configuración sigue a su servidor.
+                const ownLevel = isChannel ? prefs.channels[serverMenu.id] : prefs.servers[serverMenu.id]
+                const inheritedLevel = serverLevel(prefs, isChannel ? activeServer : serverMenu.id)
                 const item = (
                   label: string,
                   icon: React.ComponentProps<typeof Ionicons>["name"],
                   onPress: () => void,
-                  opts: { disabled?: boolean; danger?: boolean; badge?: number } = {},
+                  opts: { disabled?: boolean; danger?: boolean; badge?: number; checked?: boolean } = {},
                 ) => (
                   <PressableScale
                     key={label}
                     onPress={onPress}
                     disabled={opts.disabled}
-                    accessibilityLabel={label}
+                    accessibilityLabel={opts.checked ? `${label}, seleccionado` : label}
                     hoverStyle={{ backgroundColor: opts.danger ? "rgba(255,127,114,0.14)" : "rgba(55,214,192,0.12)" }}
                     style={{
                       flexDirection: "row",
@@ -3326,6 +3616,7 @@ export default function ChatScreen() {
                         <Text style={{ color: "#04211D", fontSize: 10, fontWeight: "800" }}>{opts.badge > 99 ? "99+" : opts.badge}</Text>
                       </View>
                     ) : null}
+                    {opts.checked ? <Ionicons name="checkmark" size={16} color="#37D6C0" /> : null}
                   </PressableScale>
                 )
                 const separator = (key: string) => (
@@ -3363,17 +3654,38 @@ export default function ChatScreen() {
                       () => (isChannel ? handleMarkChannelRead(serverMenu.id) : handleMarkServerRead(serverMenu.id)),
                       { disabled: !hasUnreadHere },
                     )}
-                    {item(
-                      isMuted
-                        ? isChannel
-                          ? "Reactivar notificaciones del canal"
-                          : "Reactivar notificaciones del servidor"
-                        : isChannel
-                          ? "Silenciar canal"
-                          : "Silenciar servidor",
-                      isMuted ? "notifications-outline" : "notifications-off-outline",
-                      () => handleToggleMute(serverMenu.kind, serverMenu.id, !isMuted),
+                    <Text
+                      style={{
+                        color: "#8DA8AC",
+                        fontSize: 10.5,
+                        fontWeight: "800",
+                        letterSpacing: 0.5,
+                        paddingHorizontal: 14,
+                        paddingTop: 8,
+                        paddingBottom: 2,
+                      }}
+                    >
+                      {isChannel ? "NOTIFICACIONES DEL CANAL" : "NOTIFICACIONES DEL SERVIDOR"}
+                    </Text>
+                    {NOTIFICATION_LEVELS.map(({ level, label, icon }) =>
+                      item(
+                        label,
+                        icon as React.ComponentProps<typeof Ionicons>["name"],
+                        // Un servidor en "todos" es el valor por defecto: se quita la configuración.
+                        // Un canal siempre guarda su elección, aunque sea "todos", para poder pisar
+                        // la del servidor.
+                        () => handleSetLevel(serverMenu.kind, serverMenu.id, !isChannel && level === "all" ? null : level),
+                        { checked: (ownLevel ?? (isChannel ? undefined : "all")) === level },
+                      ),
                     )}
+                    {isChannel
+                      ? item(
+                          `Usar la del servidor (${levelLabel(inheritedLevel)})`,
+                          "git-branch-outline",
+                          () => handleSetLevel("channel", serverMenu.id, null),
+                          { checked: ownLevel === undefined },
+                        )
+                      : null}
                     {manageItems.length > 0 ? separator("sep-manage") : null}
                     {manageItems}
                     {exitItems.length > 0 ? separator("sep-exit") : null}
@@ -3383,6 +3695,126 @@ export default function ChatScreen() {
               })()}
             </View>
           ) : null}
+        </Pressable>
+      </Modal>
+
+      {/* Centro de notificaciones (HU-5): menciones recientes, de la más nueva a la más vieja. */}
+      <Modal visible={notifOpen} transparent animationType="fade" onRequestClose={() => setNotifOpen(false)}>
+        <Pressable
+          style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)", alignItems: "center", justifyContent: "center", padding: 16 }}
+          onPress={() => setNotifOpen(false)}
+          accessibilityLabel="Cerrar notificaciones"
+        >
+          <Pressable
+            onPress={() => undefined}
+            style={{
+              width: "100%",
+              maxWidth: 480,
+              maxHeight: "80%",
+              borderRadius: 14,
+              backgroundColor: "#151D23",
+              borderWidth: 1,
+              borderColor: "rgba(255,255,255,0.13)",
+              overflow: "hidden",
+            }}
+          >
+            <View
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 8,
+                paddingHorizontal: 16,
+                paddingVertical: 14,
+                borderBottomWidth: 1,
+                borderBottomColor: "rgba(255,255,255,0.13)",
+              }}
+            >
+              <View style={{ flex: 1 }}>
+                <Text style={{ color: "#E6F3F3", fontSize: 15, fontWeight: "800" }}>Notificaciones</Text>
+                <Text style={{ color: "#8DA8AC", fontSize: 11, marginTop: 1 }}>
+                  Menciones de los últimos {notifDays} días
+                </Text>
+              </View>
+              <TouchableOpacity onPress={() => setNotifOpen(false)} accessibilityLabel="Cerrar" hitSlop={8}>
+                <Ionicons name="close" size={20} color="#8DA8AC" />
+              </TouchableOpacity>
+            </View>
+            {notifLoading && notifItems.length === 0 ? (
+              <View style={{ padding: 32, alignItems: "center" }}>
+                <ActivityIndicator color="#37D6C0" />
+              </View>
+            ) : notifError ? (
+              <View style={{ padding: 24, alignItems: "center", gap: 10 }}>
+                <Text style={{ color: "#FF9E94", fontSize: 12.5, textAlign: "center" }}>{notifError}</Text>
+                <PressableScale
+                  onPress={loadNotifications}
+                  style={{ paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8, backgroundColor: "rgba(55,214,192,0.14)" }}
+                >
+                  <Text style={{ color: "#37D6C0", fontSize: 12.5, fontWeight: "700" }}>Reintentar</Text>
+                </PressableScale>
+              </View>
+            ) : notifItems.length === 0 ? (
+              // CA2: sin actividad relevante reciente.
+              <View style={{ padding: 32, alignItems: "center", gap: 8 }}>
+                <Ionicons name="notifications-off-outline" size={30} color="#5E7E82" />
+                <Text style={{ color: "#E6F3F3", fontSize: 14, fontWeight: "700" }}>
+                  No hay notificaciones para mostrar
+                </Text>
+                <Text style={{ color: "#8DA8AC", fontSize: 12, textAlign: "center" }}>
+                  Cuando te mencionen, lo vas a ver acá durante {notifDays} días.
+                </Text>
+              </View>
+            ) : (
+              <FlatList
+                data={notifItems}
+                keyExtractor={(n) => n.id}
+                renderItem={({ item: n }) => {
+                  const channelName = notifChannelNames[n.channelId]
+                  const serverName = servers.find((sv) => sv.id === n.serverId)?.name
+                  const initials = n.author.split(" ").map((w) => w[0]).join("").slice(0, 2)
+                  return (
+                    <PressableScale
+                      onPress={() => openNotification(n)}
+                      accessibilityLabel={`${n.author} ${n.kind === "everyone" ? "mencionó a todos" : "te mencionó"} en ${
+                        channelName ? `#${channelName}` : "un canal"
+                      }`}
+                      hoverStyle={{ backgroundColor: "rgba(55,214,192,0.08)" }}
+                      style={{
+                        flexDirection: "row",
+                        gap: 10,
+                        paddingHorizontal: 16,
+                        paddingVertical: 12,
+                        borderBottomWidth: 1,
+                        borderBottomColor: "rgba(255,255,255,0.07)",
+                        backgroundColor: n.unread ? "rgba(55,214,192,0.07)" : "transparent",
+                      }}
+                    >
+                      <Avatar initials={initials} />
+                      <View style={{ flex: 1, gap: 2 }}>
+                        <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                          <Text style={{ flex: 1, color: "#E6F3F3", fontSize: 12.5 }} numberOfLines={1}>
+                            <Text style={{ fontWeight: "700" }}>{n.author}</Text>
+                            {n.kind === "everyone" ? " mencionó a todos" : " te mencionó"}
+                          </Text>
+                          <Text style={{ color: "#8DA8AC", fontSize: 10.5 }}>{timeAgo(n.createdAt)}</Text>
+                          {n.unread ? (
+                            <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: "#37D6C0" }} />
+                          ) : null}
+                        </View>
+                        <Text style={{ color: "#37D6C0", fontSize: 11, fontWeight: "600" }} numberOfLines={1}>
+                          {channelName ? `#${channelName}` : "Canal"}
+                          {serverName ? ` · ${serverName}` : ""}
+                        </Text>
+                        <Text style={{ color: "#B7CDD0", fontSize: 12 }} numberOfLines={2}>
+                          {n.content}
+                        </Text>
+                      </View>
+                    </PressableScale>
+                  )
+                }}
+              />
+            )}
+          </Pressable>
         </Pressable>
       </Modal>
 
@@ -3428,29 +3860,6 @@ export default function ChatScreen() {
           borderRightColor: "rgba(255,255,255,0.13)",
         }}
       >
-        {isNarrow ? (
-          <PressableScale
-            onPress={handleMarkAllRead}
-            disabled={!hasAnyUnread}
-            accessibilityLabel="Marcar todo como leído"
-            hoverStyle={{ backgroundColor: "rgba(55,214,192,0.14)" }}
-            style={{
-              flexDirection: "row",
-              alignItems: "center",
-              gap: 8,
-              paddingHorizontal: 14,
-              paddingVertical: 11,
-              borderBottomWidth: 1,
-              borderBottomColor: "rgba(255,255,255,0.13)",
-              opacity: hasAnyUnread ? 1 : 0.4,
-            }}
-          >
-            <Ionicons name="checkmark-done-outline" size={16} color="#37D6C0" />
-            <Text style={{ color: "#37D6C0", fontSize: 13, fontWeight: "700" }}>
-              Marcar todo como leído
-            </Text>
-          </PressableScale>
-        ) : null}
         {/* Server name header: name on its own row so long names stay readable,
             actions on a compact row underneath. Hidden when no real server is
             selected (e.g. the user has none) so Invitar/Salir never show for an
@@ -3477,8 +3886,12 @@ export default function ChatScreen() {
               <Text style={{ flex: 1, color: "#E6F3F3", fontWeight: "700", fontSize: 14 }} numberOfLines={2}>
                 {activeServerName}
               </Text>
-              {mutes.servers[activeServer] ? (
-                <Ionicons name="notifications-off-outline" size={13} color="#5E7E82" />
+              {serverLevel(prefs, activeServer) !== "all" ? (
+                <Ionicons
+                  name={serverLevel(prefs, activeServer) === "none" ? "notifications-off-outline" : "at-outline"}
+                  size={13}
+                  color="#5E7E82"
+                />
               ) : null}
               {canModerate && pendingReports > 0 && !activeSuspended ? (
                 <View style={{ minWidth: 17, height: 17, paddingHorizontal: 4, borderRadius: 9999, alignItems: "center", justifyContent: "center", backgroundColor: "#FF7F72" }}>
@@ -3562,7 +3975,7 @@ export default function ChatScreen() {
               </View>
               {cat.channels.map((ch) => {
                 const active = activeChannel === ch.id
-                const cu = ch.type === "text" ? channelUnread(ch) : { unread: false, mentions: 0, muted: false }
+                const cu = ch.type === "text" ? channelUnread(ch) : { unread: false, mentions: 0, muted: false, level: "all" as NotificationLevel }
                 const inCall = ch.type === "voice" && voice.channel?.id === ch.id && voice.status !== "idle"
                 const roster = voiceRosterFor(ch.id)
                 return (
@@ -3626,8 +4039,12 @@ export default function ChatScreen() {
                     >
                       {ch.name}
                     </Text>
-                    {cu.muted ? (
-                      <Ionicons name="notifications-off-outline" size={11} color="#5E7E82" />
+                    {cu.level !== "all" ? (
+                      <Ionicons
+                        name={cu.muted ? "notifications-off-outline" : "at-outline"}
+                        size={11}
+                        color="#5E7E82"
+                      />
                     ) : null}
                     {canManageChannels && active ? (
                       <View style={{ flexDirection: "row", gap: 2 }}>
@@ -3971,41 +4388,78 @@ export default function ChatScreen() {
               : { padding: 16, gap: 13 }
           }
           ListEmptyComponent={
-            <View style={{ alignItems: "center", gap: 10, maxWidth: 320 }}>
-              <View
-                style={{
-                  width: 52,
-                  height: 52,
-                  borderRadius: 9999,
-                  alignItems: "center",
-                  justifyContent: "center",
-                  backgroundColor: "rgba(55,214,192,0.12)",
-                }}
-              >
-                <Ionicons
-                  name={activeSuspended ? "lock-closed-outline" : "chatbubbles-outline"}
-                  size={26}
-                  color={activeSuspended ? "#FF7F72" : "#37D6C0"}
-                />
+            loadingMessages || loadingChannels ? (
+              // A channel's first page is loading, or a server switch is fetching its
+              // channel list. During the grace period show nothing (never the "no
+              // messages yet" empty state nor the previous server's messages); only
+              // reveal the loader if it is genuinely slow, so a fast switch never flashes it.
+              showLoader ? (
+                <View style={{ alignItems: "center", gap: 10 }}>
+                  <ActivityIndicator size="small" color="#37D6C0" />
+                  <Text style={{ color: "#8DA8AC", fontSize: 12.5 }}>Cargando mensajes…</Text>
+                </View>
+              ) : null
+            ) : messagesError ? (
+              // The history GET failed with nothing cached to fall back on: offer a retry.
+              <View style={{ alignItems: "center", gap: 10, maxWidth: 320 }}>
+                <Text style={{ color: "#E6F3F3", fontSize: 15, fontWeight: "700" }}>
+                  No se pudieron cargar los mensajes
+                </Text>
+                <Text style={{ color: "#8DA8AC", fontSize: 12.5, textAlign: "center", lineHeight: 18 }}>
+                  Revisá tu conexión e intentá de nuevo.
+                </Text>
+                <Pressable
+                  onPress={() => setReloadToken((t) => t + 1)}
+                  accessibilityRole="button"
+                  accessibilityLabel="Reintentar cargar los mensajes"
+                  style={{
+                    paddingVertical: 8,
+                    paddingHorizontal: 16,
+                    borderRadius: 8,
+                    borderWidth: 1,
+                    borderColor: "#37D6C0",
+                  }}
+                >
+                  <Text style={{ color: "#37D6C0", fontSize: 13, fontWeight: "700" }}>Reintentar</Text>
+                </Pressable>
               </View>
-              <Text style={{ color: "#E6F3F3", fontSize: 15, fontWeight: "700" }}>
-                {activeSuspended
-                  ? "Este servidor está suspendido"
-                  : activeServer
-                    ? "Todavía no hay mensajes"
-                    : "No tenés servidores todavía"}
-              </Text>
-              <Text style={{ color: "#8DA8AC", fontSize: 12.5, textAlign: "center", lineHeight: 18 }}>
-                {activeSuspended
-                  ? "El staff de Discordia lo suspendió mientras revisa una denuncia. Su contenido se conserva y vas a poder volver a usarlo cuando se levante la suspensión."
-                  : activeServer
-                    ? `Escribí el primero en #${channel?.name ?? "este canal"} y arrancá la conversación.`
-                    : "Creá uno con el botón + o unite con una invitación."}
-              </Text>
-            </View>
+            ) : (
+              <View style={{ alignItems: "center", gap: 10, maxWidth: 320 }}>
+                <View
+                  style={{
+                    width: 52,
+                    height: 52,
+                    borderRadius: 9999,
+                    alignItems: "center",
+                    justifyContent: "center",
+                    backgroundColor: "rgba(55,214,192,0.12)",
+                  }}
+                >
+                  <Ionicons
+                    name={activeSuspended ? "lock-closed-outline" : "chatbubbles-outline"}
+                    size={26}
+                    color={activeSuspended ? "#FF7F72" : "#37D6C0"}
+                  />
+                </View>
+                <Text style={{ color: "#E6F3F3", fontSize: 15, fontWeight: "700" }}>
+                  {activeSuspended
+                    ? "Este servidor está suspendido"
+                    : activeServer
+                      ? "Todavía no hay mensajes"
+                      : "No tenés servidores todavía"}
+                </Text>
+                <Text style={{ color: "#8DA8AC", fontSize: 12.5, textAlign: "center", lineHeight: 18 }}>
+                  {activeSuspended
+                    ? "El staff de Discordia lo suspendió mientras revisa una denuncia. Su contenido se conserva y vas a poder volver a usarlo cuando se levante la suspensión."
+                    : activeServer
+                      ? `Escribí el primero en #${channel?.name ?? "este canal"} y arrancá la conversación.`
+                      : "Creá uno con el botón + o unite con una invitación."}
+                </Text>
+              </View>
+            )
           }
           renderItem={({ item: msg }) => {
-            const authorInitials = msg.author.split(" ").map((n) => n[0]).join("")
+            const authorInitials = initials(msg.author)
             // Only wire navigation when the message carries a public author id.
             // Mock messages don't, so their authors stay non-tappable for now.
             const goToAuthor = msg.authorId
@@ -4021,17 +4475,12 @@ export default function ChatScreen() {
               !!user?.id &&
               msg.authorId !== user.id &&
               (msg.mentionsEveryone === true || (msg.mentionedUserIds?.includes(user.id) ?? false))
-            const showReport = reportable && Platform.OS === "web"
+            const showReport = reportable && Platform.OS === "web" && !isNarrow
             const editable = canEditMessage(msg)
             const deletable = canDeleteMessage(msg)
             const isEditing = editingMessageId === msg.id
             const showActions = Platform.OS === "web" && !isEditing && hoveredMessage === msg.id
-            const onLongPressMessage =
-              editable || deletable
-                ? () => setMessageActionsTarget(msg)
-                : reportable
-                  ? () => reportMessage(msg)
-                  : undefined
+            const onLongPressMessage = editable || deletable || reportable ? () => setMessageActionsTarget(msg) : undefined
             const row = (
             <Pressable
               onLongPress={isEditing ? undefined : onLongPressMessage}
@@ -4088,7 +4537,7 @@ export default function ChatScreen() {
                   ) : null}
                   <Text style={{ color: "#8DA8AC", fontSize: 10 }}>{msg.time}</Text>
                   {msg.edited ? <Text style={{ color: "#8DA8AC", fontSize: 9.5 }}>(editado)</Text> : null}
-                  {Platform.OS === "web" && !isEditing && (editable || deletable) ? (
+                  {Platform.OS === "web" && !isNarrow && !isEditing && (editable || deletable) ? (
                     <View
                       style={{
                         marginLeft: "auto",

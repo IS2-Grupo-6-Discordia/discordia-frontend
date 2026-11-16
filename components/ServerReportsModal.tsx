@@ -124,7 +124,7 @@ export default function ServerReportsModal({
 
   return (
     <ModalShell visible={visible} onClose={onClose} title="Moderación" subtitle={serverName} maxWidth={520}>
-      <View style={{ flexDirection: "row", gap: 6, marginBottom: 12 }}>
+      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6, marginBottom: 12 }}>
         {TABS.filter((t) => t.value !== "words" || canManageWords).map((t) => {
           const selected = tab === t.value
           return (
@@ -170,7 +170,7 @@ export default function ServerReportsModal({
           </Text>
         </View>
       ) : (
-        <ScrollView style={{ maxHeight: 460 }} contentContainerStyle={{ gap: 10 }}>
+        <ScrollView nestedScrollEnabled style={{ maxHeight: 460 }} contentContainerStyle={{ gap: 10 }}>
           {reports.map((r) => {
             const channelName = r.channelId ? channelNameOf(r.channelId) : null
             return (
