@@ -437,6 +437,11 @@ export default function ChatScreen() {
   // after a short grace period. A prefetched or warm channel answers well under it,
   // so switching channels never flashes a loader — it just shows the messages.
   const [showLoader, setShowLoader] = useState(false)
+  // True while a server switch is fetching the new server's channel list. The old
+  // channel is cleared immediately (so the previous server's messages never linger),
+  // and this keeps the chat pane on a loader instead of flashing the empty state
+  // until the new server's first channel is selected.
+  const [loadingChannels, setLoadingChannels] = useState(false)
   // Bumped by "Reintentar" to re-run the channel load without changing channel.
   const [reloadToken, setReloadToken] = useState(0)
   // In-memory, per-channel cache of the last messages shown, so switching back to
@@ -747,14 +752,26 @@ export default function ChatScreen() {
       setCategories([])
       setRoles([])
       setActiveChannel("")
+      setLoadingChannels(false)
       return
     }
     if (activeSuspended) {
       setCategories([])
       setRoles([])
       setActiveChannel("")
+      setLoadingChannels(false)
       return
     }
+    // Clear the previous server's channel and messages right away so they never linger
+    // on screen while the new server's channel list is in flight (the message-load
+    // effect keys on activeChannel, so without this the old messages stay until it
+    // reloads). messagesChannelRef is reset first so the cache-sync effect does not
+    // store the emptied list under the old channel. loadingChannels keeps the chat pane
+    // on a loader instead of the empty state.
+    messagesChannelRef.current = ""
+    setMessages([])
+    setActiveChannel("")
+    setLoadingChannels(true)
     getCategories(activeServer)
       .then((cats) => {
         setCategories(cats)
@@ -763,11 +780,13 @@ export default function ChatScreen() {
         pendingChannelRef.current = ""
         const target = textChannels.find((c) => c.id === pending) ?? textChannels[0]
         setActiveChannel(target ? target.id : "")
+        setLoadingChannels(false)
       })
       .catch((err) => {
         if (err instanceof ApiError && err.status === 423) setServerSuspended(activeServer, true)
         setCategories([])
         setActiveChannel("")
+        setLoadingChannels(false)
       })
     // Real roster from the backend (owner + members), hydrated with names/avatars.
     getServerMembers(activeServer)
@@ -993,13 +1012,13 @@ export default function ChatScreen() {
   // well under it, so a channel switch paints the messages with no loader flash. The
   // text only appears if the first page is genuinely slow (e.g. a cold backend).
   useEffect(() => {
-    if (!loadingMessages) {
+    if (!loadingMessages && !loadingChannels) {
       setShowLoader(false)
       return
     }
     const timer = setTimeout(() => setShowLoader(true), 300)
     return () => clearTimeout(timer)
-  }, [loadingMessages])
+  }, [loadingMessages, loadingChannels])
 
   // The latest page (60 s reconcile / fallback poll) is authoritative for its
   // time window: a loaded message inside it that the backend no longer returns
@@ -4365,10 +4384,11 @@ export default function ChatScreen() {
               : { padding: 16, gap: 13 }
           }
           ListEmptyComponent={
-            loadingMessages ? (
-              // Cache miss while the first page loads. During the grace period show
-              // nothing (never the "no messages yet" empty state); only reveal the
-              // loader if the page is genuinely slow, so a fast switch never flashes it.
+            loadingMessages || loadingChannels ? (
+              // A channel's first page is loading, or a server switch is fetching its
+              // channel list. During the grace period show nothing (never the "no
+              // messages yet" empty state nor the previous server's messages); only
+              // reveal the loader if it is genuinely slow, so a fast switch never flashes it.
               showLoader ? (
                 <View style={{ alignItems: "center", gap: 10 }}>
                   <ActivityIndicator size="small" color="#37D6C0" />
