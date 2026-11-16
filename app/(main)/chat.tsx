@@ -463,6 +463,10 @@ export default function ChatScreen() {
       cache.delete(oldest)
     }
   }, [])
+  // In-memory, per-server cache of the channel list, so switching to a prefetched
+  // server shows its channels and first messages instantly (no getCategories wait)
+  // while a GET revalidates behind. Cleared on logout; survives server switches.
+  const serverCategoriesCacheRef = useRef<Map<string, Category[]>>(new Map())
   const [unread, setUnread] = useState<UnreadSummary>(EMPTY_UNREAD)
   // "Marcar todo como leído" también apaga los indicadores de demostración del servidor de
   // ejemplo, que no vienen del backend. Mientras el pedido está en vuelo, el polling no pisa el
@@ -762,40 +766,74 @@ export default function ChatScreen() {
       setLoadingChannels(false)
       return
     }
-    // Clear the previous server's channel and messages right away so they never linger
-    // on screen while the new server's channel list is in flight (the message-load
-    // effect keys on activeChannel, so without this the old messages stay until it
-    // reloads). messagesChannelRef is reset first so the cache-sync effect does not
-    // store the emptied list under the old channel. loadingChannels keeps the chat pane
-    // on a loader instead of the empty state.
-    messagesChannelRef.current = ""
-    setMessages([])
-    setActiveChannel("")
-    setLoadingChannels(true)
-    // Clear the previous server's member roster too, so the "Miembros" panel never
-    // shows the old server's members/count until getServerMembers resolves (mirrors
-    // the setMentionRoles([]) reset below).
+    // Clear the previous server's member roster so the "Miembros" panel never shows the
+    // old server's members/count until getServerMembers resolves (mirrors setMentionRoles).
     setRoles([])
+    // Discard late getCategories/getServerMembers responses once the user has switched
+    // servers again, so a slow previous server never repaints over the current one.
+    let active = true
+    const pending = pendingChannelRef.current
+    const pickTarget = (cats: Category[]): string => {
+      const textChannels = cats.flatMap((c) => c.channels).filter((c) => c.type === "text")
+      const chosen = textChannels.find((c) => c.id === pending) ?? textChannels[0]
+      return chosen ? chosen.id : ""
+    }
+    const cachedCats = serverCategoriesCacheRef.current.get(activeServer)
+    if (cachedCats) {
+      // Prefetched server: show its channels instantly and jump to the target channel,
+      // seeding its messages from cache so nothing from the previous server flashes. The
+      // message-load effect then cache-hits (instant) or loads with its own loader.
+      pendingChannelRef.current = ""
+      const targetId = pickTarget(cachedCats)
+      const cachedMsgs = targetId ? channelCacheRef.current.get(targetId) : undefined
+      setCategories(cachedCats)
+      messagesChannelRef.current = targetId
+      setMessages(cachedMsgs ?? [])
+      setActiveChannel(targetId)
+      setLoadingChannels(false)
+    } else {
+      // Not prefetched yet: clear the previous server's chat and hold on the loader until
+      // the channel list arrives, so its messages never linger (the message-load effect
+      // keys on activeChannel). messagesChannelRef is reset first so the cache-sync effect
+      // does not store the emptied list under the old channel.
+      messagesChannelRef.current = ""
+      setMessages([])
+      setActiveChannel("")
+      setLoadingChannels(true)
+    }
     getCategories(activeServer)
       .then((cats) => {
+        serverCategoriesCacheRef.current.set(activeServer, cats)
+        if (!active) return
         setCategories(cats)
-        const textChannels = cats.flatMap((c) => c.channels).filter((c) => c.type === "text")
-        const pending = pendingChannelRef.current
-        pendingChannelRef.current = ""
-        const target = textChannels.find((c) => c.id === pending) ?? textChannels[0]
-        setActiveChannel(target ? target.id : "")
-        setLoadingChannels(false)
+        // Only (re)pick the channel when we didn't already jump from cache, so a
+        // revalidation never yanks the user off the channel they are already reading.
+        if (!cachedCats) {
+          pendingChannelRef.current = ""
+          setActiveChannel(pickTarget(cats))
+          setLoadingChannels(false)
+        }
       })
       .catch((err) => {
+        if (!active) return
         if (err instanceof ApiError && err.status === 423) setServerSuspended(activeServer, true)
-        setCategories([])
-        setActiveChannel("")
-        setLoadingChannels(false)
+        if (!cachedCats) {
+          setCategories([])
+          setActiveChannel("")
+          setLoadingChannels(false)
+        }
       })
     // Real roster from the backend (owner + members), hydrated with names/avatars.
     getServerMembers(activeServer)
-      .then((members) => setRoles(membersToRoleGroups(members)))
-      .catch(() => setRoles([]))
+      .then((members) => {
+        if (active) setRoles(membersToRoleGroups(members))
+      })
+      .catch(() => {
+        if (active) setRoles([])
+      })
+    return () => {
+      active = false
+    }
   }, [activeServer, activeSuspended, setServerSuspended])
 
   useEffect(() => {
@@ -906,12 +944,47 @@ export default function ChatScreen() {
     }
   }, [activeChannel, reloadToken])
 
-  // The cache is per server: drop it when the active server changes (channel ids
-  // differ between servers) and on logout (user gone), so a previous context's
-  // messages never repaint in a new one.
+  // Channel ids are globally-unique UUIDs, so a cached message list belongs to exactly
+  // one server's channel: the caches can safely span servers, which is what makes a
+  // switch to a prefetched server instant. Drop everything only on logout (user gone),
+  // so another account never sees the previous one's messages or channels.
   useEffect(() => {
     channelCacheRef.current.clear()
-  }, [activeServer, user?.id])
+    serverCategoriesCacheRef.current.clear()
+  }, [user?.id])
+
+  // Prefetch every server's channel list and its first text channel's first page as soon
+  // as the server list is known, so switching to another server is an instant cache hit
+  // (channels + messages) instead of two sequential GETs. Only seeds empty cache slots; a
+  // failed prefetch (e.g. a suspended server's 423) just leaves it to load on demand.
+  useEffect(() => {
+    if (!user?.id) return
+    const serverIds = servers.map((s) => s.id).filter(isRealServerId)
+    if (serverIds.length === 0) return
+    let active = true
+    for (const serverId of serverIds) {
+      if (serverCategoriesCacheRef.current.has(serverId)) continue
+      getCategories(serverId)
+        .then((cats) => {
+          if (!active) return
+          serverCategoriesCacheRef.current.set(serverId, cats)
+          const firstText = cats
+            .flatMap((c) => c.channels)
+            .find((ch) => ch.type === "text" && UUID_RE.test(ch.id))
+          if (firstText && !channelCacheRef.current.has(firstText.id)) {
+            getMessages(firstText.id)
+              .then((msgs) => {
+                if (active && !channelCacheRef.current.has(firstText.id)) putCache(firstText.id, msgs)
+              })
+              .catch(() => {})
+          }
+        })
+        .catch(() => {})
+    }
+    return () => {
+      active = false
+    }
+  }, [servers, user?.id, putCache])
 
   // Prefetch the first page of every real text channel as soon as the channel list
   // loads, so switching channels is an instant cache hit instead of a GET-then-loader.
