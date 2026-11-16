@@ -772,6 +772,10 @@ export default function ChatScreen() {
     setMessages([])
     setActiveChannel("")
     setLoadingChannels(true)
+    // Clear the previous server's member roster too, so the "Miembros" panel never
+    // shows the old server's members/count until getServerMembers resolves (mirrors
+    // the setMentionRoles([]) reset below).
+    setRoles([])
     getCategories(activeServer)
       .then((cats) => {
         setCategories(cats)
