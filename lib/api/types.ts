@@ -247,12 +247,15 @@ export interface UnreadCounts {
   unread: number
   mentions: number
   serverId?: string
-  muted?: boolean
 }
 
-export interface MuteState {
-  servers: Record<string, true>
-  channels: Record<string, true>
+// Qué actividad notifica un canal o servidor: todos los mensajes, solo menciones o ninguna.
+export type NotificationLevel = "all" | "mentions" | "none"
+
+// Lo que el usuario configuró (lo que no figura no tiene configuración propia).
+export interface NotificationPrefs {
+  servers: Record<string, NotificationLevel>
+  channels: Record<string, NotificationLevel>
 }
 
 export interface UnreadSummary {
