@@ -124,7 +124,7 @@ export default function ServerReportsModal({
 
   return (
     <ModalShell visible={visible} onClose={onClose} title="Moderación" subtitle={serverName} maxWidth={520}>
-      <View style={{ flexDirection: "row", gap: 6, marginBottom: 12 }}>
+      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6, marginBottom: 12 }}>
         {TABS.filter((t) => t.value !== "words" || canManageWords).map((t) => {
           const selected = tab === t.value
           return (
