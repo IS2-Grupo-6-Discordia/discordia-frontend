@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react"
 import type { ReactNode } from "react"
-import { View, Text, TouchableOpacity, Modal, Platform } from "react-native"
+import { View, Text, TouchableOpacity, Modal, Platform, ScrollView } from "react-native"
 
 interface ModalShellProps {
   visible: boolean
@@ -53,6 +53,7 @@ export default function ModalShell({
           style={{
             width: "100%",
             maxWidth,
+            maxHeight: "100%",
             borderRadius: 16,
             padding: 22,
             backgroundColor: "#0B1822",
@@ -98,7 +99,14 @@ export default function ModalShell({
             </Text>
           ) : null}
 
-          {children}
+          <ScrollView
+            style={{ flexGrow: 0, flexShrink: 1 }}
+            nestedScrollEnabled
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+          >
+            {children}
+          </ScrollView>
         </TouchableOpacity>
       </TouchableOpacity>
     </Modal>

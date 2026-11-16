@@ -311,7 +311,7 @@ export default function RolesModal({
           <Text style={{ color: "#8DA8AC", fontSize: 12, marginBottom: 10 }}>
             El primero es la posición 1 (la más alta). Usá las flechas para cambiar el orden.
           </Text>
-          <ScrollView style={{ maxHeight: 300 }}>
+          <ScrollView nestedScrollEnabled style={{ maxHeight: 300 }}>
             {order.map((role, index) => {
               const locked = isLocked(role)
               const upDisabled =
@@ -383,7 +383,7 @@ export default function RolesModal({
           <Text style={{ color: "#5E7E82", fontSize: 13 }}>Este servidor no tiene roles.</Text>
         </View>
       ) : (
-        <ScrollView style={{ maxHeight: 320 }}>
+        <ScrollView nestedScrollEnabled style={{ maxHeight: 320 }}>
           {roles.map((role) => {
             const busy = busyRoleId === role.id
             const isDefault = role.id === defaultRoleId
