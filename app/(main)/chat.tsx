@@ -79,11 +79,14 @@ import {
   markAllRead,
   withoutChannel,
   withoutServer,
-  getMutes,
-  setChannelMuted,
-  setServerMuted,
-  withMute,
-  EMPTY_MUTES,
+  getNotificationPrefs,
+  setNotificationLevel,
+  withLevel,
+  channelLevel,
+  serverLevel,
+  levelLabel,
+  NOTIFICATION_LEVELS,
+  EMPTY_PREFS,
   extractMentionIds,
   extractRoleMentionIds,
   hasEveryoneMention,
@@ -107,7 +110,8 @@ import type {
   ServerBan,
   MyServerPermissions,
   UnreadSummary,
-  MuteState,
+  NotificationPrefs,
+  NotificationLevel,
 } from "@/lib/api/types"
 import { formatMuteEnd, hasServerPermission, isMutedAt } from "@/lib/api/types"
 import { ApiError, friendlyError } from "@/lib/api/client"
@@ -451,8 +455,9 @@ export default function ChatScreen() {
   // resumen ya vaciado.
   const [demoCleared, setDemoCleared] = useState(false)
   const markingAllRef = useRef(false)
-  const [mutes, setMutes] = useState<MuteState>(EMPTY_MUTES)
-  const mutingRef = useRef(0)
+  // Preferencias de notificación (HU-4): qué actividad avisa cada canal y servidor.
+  const [prefs, setPrefs] = useState<NotificationPrefs>(EMPTY_PREFS)
+  const savingPrefsRef = useRef(0)
   const reloadUnreadRef = useRef<(() => void) | null>(null)
 
   // Add-server modal (HU-1 create / HU-3 join)
@@ -1049,18 +1054,18 @@ export default function ChatScreen() {
   useEffect(() => {
     if (!realServerIds) {
       setUnread(EMPTY_UNREAD)
-      setMutes(EMPTY_MUTES)
+      setPrefs(EMPTY_PREFS)
       return
     }
     let active = true
-    const loadMutes = () =>
-      getMutes(realServerIds.split(","))
-        .then((state) => {
-          if (active && mutingRef.current === 0) setMutes(state)
+    const loadPrefs = () =>
+      getNotificationPrefs(realServerIds.split(","))
+        .then((loaded) => {
+          if (active && savingPrefsRef.current === 0) setPrefs(loaded)
         })
         .catch(() => undefined)
     const load = () => {
-      loadMutes()
+      loadPrefs()
       return getUnreadSummary(realServerIds.split(","))
         .then((summary) => {
           if (!active || markingAllRef.current) return
@@ -1178,25 +1183,31 @@ export default function ChatScreen() {
 
   // Lo que se pinta para un canal o servidor: el resumen del backend, y para el servidor de
   // ejemplo los valores de demostración que ya traía.
+  // El backend ya arma el resumen según las preferencias; acá además se aplica el nivel del canal
+  // para que un cambio recién hecho se vea al instante, sin esperar al próximo resumen.
+  // level: el que vale para el canal (la configuración más específica gana: canal, si no servidor).
   const channelUnread = (ch: { id: string; unread?: boolean; mention?: number }) => {
     const u = unread.channels[ch.id]
-    const muted = !!mutes.channels[ch.id] || !!mutes.servers[activeServer]
-    if (demoCleared) return { unread: !!u, mentions: u && !muted ? u.mentions : 0, muted }
-    return {
-      unread: !!u || !!ch.unread,
-      mentions: muted ? 0 : u ? u.mentions : (ch.mention ?? 0),
-      muted,
-    }
+    const level = channelLevel(prefs, activeServer, ch.id)
+    const muted = level === "none"
+    const mentions = u ? u.mentions : demoCleared ? 0 : (ch.mention ?? 0)
+    const hasUnread = u ? true : demoCleared ? false : !!ch.unread
+    if (muted) return { unread: false, mentions: 0, muted, level }
+    if (level === "mentions") return { unread: mentions > 0, mentions, muted, level }
+    return { unread: hasUnread, mentions, muted, level }
   }
+  // Para el servidor manda el resumen del backend: suma solo los canales que notifican, así que un
+  // canal que pidió "todos" en un servidor en "ninguno" igual lo enciende.
   const serverUnread = (s: Server) => {
     const u = unread.servers[s.id]
-    const muted = !!mutes.servers[s.id] || !!u?.muted
-    if (demoCleared) return { unread: !!u, mentions: u && !muted ? u.mentions : 0, muted }
-    return {
-      unread: !!u || !!s.unread || !!s.mention,
-      mentions: muted ? 0 : u ? u.mentions : (s.mention ?? 0),
-      muted,
-    }
+    const level = serverLevel(prefs, s.id)
+    const muted = level === "none"
+    if (u || demoCleared) return { unread: !!u, mentions: u?.mentions ?? 0, muted, level }
+    // Valores de demostración del servidor de ejemplo, filtrados por el nivel.
+    const mentions = s.mention ?? 0
+    if (muted) return { unread: false, mentions: 0, muted, level }
+    if (level === "mentions") return { unread: mentions > 0, mentions, muted, level }
+    return { unread: !!s.unread || !!s.mention, mentions, muted, level }
   }
   const hasAnyUnread = servers.some((s) => serverUnread(s).unread)
 
@@ -1264,19 +1275,22 @@ export default function ChatScreen() {
     })
   }
 
-  const handleToggleMute = (kind: "server" | "channel", id: string, muted: boolean) => {
+  // HU-4 CA1: elegir qué notifica un canal o servidor. `null` quita la configuración propia: el canal
+  // vuelve a la de su servidor y el servidor a "todos los mensajes". Es optimista: se ve al instante
+  // y, si el pedido falla, se restaura lo anterior y se avisa.
+  const handleSetLevel = (kind: "server" | "channel", id: string, level: NotificationLevel | null) => {
     closeServerMenu()
-    setMutes((prev) => withMute(prev, kind, id, muted))
-    mutingRef.current += 1
-    const request = kind === "server" ? setServerMuted(id, muted) : setChannelMuted(id, muted)
-    request
+    const previous = prefs
+    setPrefs((prev) => withLevel(prev, kind, id, level))
+    savingPrefsRef.current += 1
+    setNotificationLevel(kind, id, level)
       .then(() => reloadUnreadRef.current?.())
       .catch((err) => {
-        setMutes((prev) => withMute(prev, kind, id, !muted))
+        setPrefs(previous)
         setBannerError(friendlyError(err))
       })
       .finally(() => {
-        mutingRef.current -= 1
+        savingPrefsRef.current -= 1
       })
   }
 
@@ -3172,7 +3186,7 @@ export default function ChatScreen() {
             <View
               key={s.id}
               {...(Platform.OS === "web"
-                ? { onMouseEnter: showTooltip(s.name, serverUnread(s).muted ? "Silenciado" : undefined), onMouseLeave: hideTooltip }
+                ? { onMouseEnter: showTooltip(s.name, serverUnread(s).level !== "all" ? levelLabel(serverUnread(s).level) : undefined), onMouseLeave: hideTooltip }
                 : {})}
             >
               {activeServer === s.id && (
@@ -3365,7 +3379,8 @@ export default function ChatScreen() {
               style={{
                 position: "absolute",
                 left: Math.max(8, Math.min(serverMenu.x, windowWidth - Math.max(serverMenu.w, 220) - 8)),
-                top: Math.max(8, Math.min(serverMenu.y, windowHeight - (serverMenu.full ? 510 : 120))),
+                // La altura del menú depende de cuántas opciones tenga (el de servidor completo es más largo).
+                top: Math.max(8, Math.min(serverMenu.y, windowHeight - (serverMenu.full ? 600 : 240))),
                 width: Math.max(serverMenu.w, 220),
                 paddingVertical: 6,
                 borderRadius: 10,
@@ -3377,18 +3392,21 @@ export default function ChatScreen() {
               {(() => {
                 const isChannel = serverMenu.kind === "channel"
                 const hasUnreadHere = isChannel ? !!unread.channels[serverMenu.id] : !!unread.servers[serverMenu.id]
-                const isMuted = isChannel ? !!mutes.channels[serverMenu.id] : !!mutes.servers[serverMenu.id]
+                // Nivel configurado para este objetivo (undefined = sin configuración propia) y el
+                // que vale por herencia: un canal sin configuración sigue a su servidor.
+                const ownLevel = isChannel ? prefs.channels[serverMenu.id] : prefs.servers[serverMenu.id]
+                const inheritedLevel = serverLevel(prefs, isChannel ? activeServer : serverMenu.id)
                 const item = (
                   label: string,
                   icon: React.ComponentProps<typeof Ionicons>["name"],
                   onPress: () => void,
-                  opts: { disabled?: boolean; danger?: boolean; badge?: number } = {},
+                  opts: { disabled?: boolean; danger?: boolean; badge?: number; checked?: boolean } = {},
                 ) => (
                   <PressableScale
                     key={label}
                     onPress={onPress}
                     disabled={opts.disabled}
-                    accessibilityLabel={label}
+                    accessibilityLabel={opts.checked ? `${label}, seleccionado` : label}
                     hoverStyle={{ backgroundColor: opts.danger ? "rgba(255,127,114,0.14)" : "rgba(55,214,192,0.12)" }}
                     style={{
                       flexDirection: "row",
@@ -3408,6 +3426,7 @@ export default function ChatScreen() {
                         <Text style={{ color: "#04211D", fontSize: 10, fontWeight: "800" }}>{opts.badge > 99 ? "99+" : opts.badge}</Text>
                       </View>
                     ) : null}
+                    {opts.checked ? <Ionicons name="checkmark" size={16} color="#37D6C0" /> : null}
                   </PressableScale>
                 )
                 const separator = (key: string) => (
@@ -3445,17 +3464,38 @@ export default function ChatScreen() {
                       () => (isChannel ? handleMarkChannelRead(serverMenu.id) : handleMarkServerRead(serverMenu.id)),
                       { disabled: !hasUnreadHere },
                     )}
-                    {item(
-                      isMuted
-                        ? isChannel
-                          ? "Reactivar notificaciones del canal"
-                          : "Reactivar notificaciones del servidor"
-                        : isChannel
-                          ? "Silenciar canal"
-                          : "Silenciar servidor",
-                      isMuted ? "notifications-outline" : "notifications-off-outline",
-                      () => handleToggleMute(serverMenu.kind, serverMenu.id, !isMuted),
+                    <Text
+                      style={{
+                        color: "#8DA8AC",
+                        fontSize: 10.5,
+                        fontWeight: "800",
+                        letterSpacing: 0.5,
+                        paddingHorizontal: 14,
+                        paddingTop: 8,
+                        paddingBottom: 2,
+                      }}
+                    >
+                      {isChannel ? "NOTIFICACIONES DEL CANAL" : "NOTIFICACIONES DEL SERVIDOR"}
+                    </Text>
+                    {NOTIFICATION_LEVELS.map(({ level, label, icon }) =>
+                      item(
+                        label,
+                        icon as React.ComponentProps<typeof Ionicons>["name"],
+                        // Un servidor en "todos" es el valor por defecto: se quita la configuración.
+                        // Un canal siempre guarda su elección, aunque sea "todos", para poder pisar
+                        // la del servidor.
+                        () => handleSetLevel(serverMenu.kind, serverMenu.id, !isChannel && level === "all" ? null : level),
+                        { checked: (ownLevel ?? (isChannel ? undefined : "all")) === level },
+                      ),
                     )}
+                    {isChannel
+                      ? item(
+                          `Usar la del servidor (${levelLabel(inheritedLevel)})`,
+                          "git-branch-outline",
+                          () => handleSetLevel("channel", serverMenu.id, null),
+                          { checked: ownLevel === undefined },
+                        )
+                      : null}
                     {manageItems.length > 0 ? separator("sep-manage") : null}
                     {manageItems}
                     {exitItems.length > 0 ? separator("sep-exit") : null}
@@ -3559,8 +3599,12 @@ export default function ChatScreen() {
               <Text style={{ flex: 1, color: "#E6F3F3", fontWeight: "700", fontSize: 14 }} numberOfLines={2}>
                 {activeServerName}
               </Text>
-              {mutes.servers[activeServer] ? (
-                <Ionicons name="notifications-off-outline" size={13} color="#5E7E82" />
+              {serverLevel(prefs, activeServer) !== "all" ? (
+                <Ionicons
+                  name={serverLevel(prefs, activeServer) === "none" ? "notifications-off-outline" : "at-outline"}
+                  size={13}
+                  color="#5E7E82"
+                />
               ) : null}
               {canModerate && pendingReports > 0 && !activeSuspended ? (
                 <View style={{ minWidth: 17, height: 17, paddingHorizontal: 4, borderRadius: 9999, alignItems: "center", justifyContent: "center", backgroundColor: "#FF7F72" }}>
@@ -3644,7 +3688,7 @@ export default function ChatScreen() {
               </View>
               {cat.channels.map((ch) => {
                 const active = activeChannel === ch.id
-                const cu = ch.type === "text" ? channelUnread(ch) : { unread: false, mentions: 0, muted: false }
+                const cu = ch.type === "text" ? channelUnread(ch) : { unread: false, mentions: 0, muted: false, level: "all" as NotificationLevel }
                 const inCall = ch.type === "voice" && voice.channel?.id === ch.id && voice.status !== "idle"
                 const roster = voiceRosterFor(ch.id)
                 return (
@@ -3708,8 +3752,12 @@ export default function ChatScreen() {
                     >
                       {ch.name}
                     </Text>
-                    {cu.muted ? (
-                      <Ionicons name="notifications-off-outline" size={11} color="#5E7E82" />
+                    {cu.level !== "all" ? (
+                      <Ionicons
+                        name={cu.muted ? "notifications-off-outline" : "at-outline"}
+                        size={11}
+                        color="#5E7E82"
+                      />
                     ) : null}
                     {canManageChannels && active ? (
                       <View style={{ flexDirection: "row", gap: 2 }}>

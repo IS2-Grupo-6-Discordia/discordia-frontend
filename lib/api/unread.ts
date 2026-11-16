@@ -10,9 +10,8 @@ interface BackendUnreadSummary {
     server_id: string
     unread_count: number
     mention_count: number
-    muted?: boolean
   }[]
-  servers: { server_id: string; unread_count: number; mention_count: number; muted?: boolean }[]
+  servers: { server_id: string; unread_count: number; mention_count: number }[]
 }
 
 export const EMPTY_UNREAD: UnreadSummary = { channels: {}, servers: {} }
@@ -27,14 +26,12 @@ export async function getUnreadSummary(serverIds: string[]): Promise<UnreadSumma
         unread: c.unread_count,
         mentions: c.mention_count,
         serverId: c.server_id,
-        muted: !!c.muted,
       }
     }
     for (const s of res.servers) {
       summary.servers[s.server_id] = {
         unread: s.unread_count,
         mentions: s.mention_count,
-        muted: !!s.muted,
       }
     }
   }
@@ -76,9 +73,7 @@ export function withoutChannel(summary: UnreadSummary, channelId: string): Unrea
     const mentions = server.mentions - removed.mentions
     if (unread <= 0) delete servers[serverId]
     else {
-      const remaining = Object.values(channels).filter((c) => c.serverId === serverId)
-      const muted = remaining.length > 0 && remaining.every((c) => c.muted)
-      servers[serverId] = { unread, mentions: Math.max(0, mentions), muted }
+      servers[serverId] = { unread, mentions: Math.max(0, mentions) }
     }
   }
   return { channels, servers }
