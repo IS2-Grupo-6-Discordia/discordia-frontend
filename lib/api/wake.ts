@@ -10,6 +10,7 @@ const RENDER_DEFAULT_WAKE_URLS = [
 const WAKE_TIMEOUT_MS = 120_000
 const ATTEMPT_TIMEOUT_MS = 30_000
 const RETRY_DELAY_MS = 2_000
+const BLOCKED_FAST_FAIL_MS = 1_000
 const AWAKE_GRACE_MS = 5 * 60_000
 
 export type WakeState = "idle" | "waking" | "ready" | "failed"
@@ -59,10 +60,16 @@ async function attempt(url: string): Promise<void> {
 async function ping(url: string): Promise<void> {
   const deadline = Date.now() + WAKE_TIMEOUT_MS
   for (;;) {
+    const startedAt = Date.now()
     try {
       await attempt(url)
       return
     } catch (err) {
+      // A sleeping Render service hangs or answers (opaque response); it does not
+      // reject instantly. An instant network error means the browser blocked the
+      // request (e.g. Brave Shields), so waiting would never succeed.
+      const aborted = err instanceof Error && err.name === "AbortError"
+      if (!aborted && Date.now() - startedAt < BLOCKED_FAST_FAIL_MS) return
       if (Date.now() + RETRY_DELAY_MS >= deadline) throw err
       await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS))
     }
