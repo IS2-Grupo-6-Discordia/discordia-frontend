@@ -311,6 +311,10 @@ const MENTION_FORBIDDEN_MESSAGE = "No tenés permiso para mencionar a todo el se
 const MESSAGE_MAX = 4000
 // HU-6 CA1: page size for loading older history, matching useChannelMessages' PAGE_LIMIT.
 const HISTORY_PAGE = 50
+// Most recently visited channels whose messages are kept in memory for an instant
+// repaint on switch (fix/channel-switch-instant). Bounded so the cache can't grow
+// unbounded; not persisted and cleared on server change / logout.
+const CHANNEL_CACHE_LIMIT = 20
 // A partir de acá mostramos el contador, para no distraer en mensajes cortos.
 const MESSAGE_COUNTER_FROM = MESSAGE_MAX - 200
 
@@ -413,6 +417,34 @@ export default function ChatScreen() {
   // arrive after the user switched channels.
   const activeChannelRef = useRef(activeChannel)
   activeChannelRef.current = activeChannel
+  // Switch-to-channel UX (fix/channel-switch-instant): `loadingMessages` is true
+  // while the first page of a channel with no cached copy is in flight (so a
+  // loader shows instead of the "no messages yet" empty state), and
+  // `messagesError` offers a retry when that first GET fails. Both are separate
+  // from historyError, which is the older-page (HU-6) pagination error.
+  const [loadingMessages, setLoadingMessages] = useState(false)
+  const [messagesError, setMessagesError] = useState(false)
+  // Bumped by "Reintentar" to re-run the channel load without changing channel.
+  const [reloadToken, setReloadToken] = useState(0)
+  // In-memory, per-channel cache of the last messages shown, so switching back to
+  // a visited channel paints instantly while the GET revalidates behind it. Not
+  // persisted; cleared on server change / logout; LRU-bounded to CHANNEL_CACHE_LIMIT.
+  // messagesChannelRef is the channel the current `messages` reflect, so an update
+  // still in flight for the previous channel is cached under that channel, not the
+  // one just opened.
+  const channelCacheRef = useRef<Map<string, Message[]>>(new Map())
+  const messagesChannelRef = useRef<string>("")
+  const putCache = useCallback((channelId: string, msgs: Message[]) => {
+    if (!UUID_RE.test(channelId)) return // only real channels are cached
+    const cache = channelCacheRef.current
+    cache.delete(channelId) // re-insert so this channel becomes most-recently-used
+    cache.set(channelId, msgs)
+    while (cache.size > CHANNEL_CACHE_LIMIT) {
+      const oldest = cache.keys().next().value
+      if (oldest === undefined) break
+      cache.delete(oldest)
+    }
+  }, [])
   const [unread, setUnread] = useState<UnreadSummary>(EMPTY_UNREAD)
   // "Marcar todo como leído" también apaga los indicadores de demostración del servidor de
   // ejemplo, que no vienen del backend. Mientras el pedido está en vuelo, el polling no pisa el
@@ -769,31 +801,66 @@ export default function ChatScreen() {
     setLoadingOlder(false)
     setHistoryError(false)
     setHasMoreHistory(false)
+    setMessagesError(false)
     if (!activeChannel) {
+      messagesChannelRef.current = ""
       setMessages([])
+      setLoadingMessages(false)
       return
     }
+    const channelId = activeChannel
+    const isReal = UUID_RE.test(channelId)
+    messagesChannelRef.current = channelId
+    // Cache hit: repaint the last messages seen for this channel instantly, then
+    // revalidate behind it. Cache miss: clear the list and show a loader (never
+    // the "no messages yet" empty state) until the GET answers.
+    const cached = isReal ? channelCacheRef.current.get(channelId) : undefined
+    if (cached) {
+      setMessages(cached)
+      setLoadingMessages(false)
+      setHasMoreHistory(cached.length >= HISTORY_PAGE)
+    } else {
+      setMessages([])
+      setLoadingMessages(isReal)
+    }
     let active = true
-    getMessages(activeChannel)
+    getMessages(channelId)
       .then((msgs) => {
         // Descartar una respuesta que llega tarde de un canal anterior: no puede
         // meter mensajes en el canal abierto ahora.
         if (!active) return
-        setMessages(msgs)
+        // On a hit, fuse the fresh page into what is shown (union by id, so live
+        // frames and already-paged older messages survive); on a miss, replace.
+        if (cached) mergeMessages(msgs)
+        else setMessages(msgs)
         // A full first page on a real channel means there may be older messages
         // to page back through; mock/example channels never paginate.
-        setHasMoreHistory(UUID_RE.test(activeChannel) && msgs.length >= HISTORY_PAGE)
+        setHasMoreHistory(isReal && msgs.length >= HISTORY_PAGE)
+        setLoadingMessages(false)
+        setMessagesError(false)
       })
       .catch((err) => {
         if (!active) return
         // Un 423 del GET del historial activa la UI de servidor suspendido.
         if (err instanceof ApiError && err.status === 423) setServerSuspended(activeServer, true)
-        setMessages([])
+        // Con algo cacheado se deja lo que ya se ve; sin nada, se ofrece reintentar.
+        if (!cached) {
+          setMessages([])
+          setMessagesError(true)
+        }
+        setLoadingMessages(false)
       })
     return () => {
       active = false
     }
-  }, [activeChannel])
+  }, [activeChannel, reloadToken])
+
+  // The cache is per server: drop it when the active server changes (channel ids
+  // differ between servers) and on logout (user gone), so a previous context's
+  // messages never repaint in a new one.
+  useEffect(() => {
+    channelCacheRef.current.clear()
+  }, [activeServer, user?.id])
 
   // --- Indicadores de no leído (CA1 canal, CA2 servidor, CA3 menciones) ---
   // Solo los servidores reales (id UUID) tienen mensajes en el backend.
@@ -850,6 +917,21 @@ export default function ChatScreen() {
     const gone = new Set(ids)
     setMessages((prev) => (prev.some((m) => gone.has(m.id)) ? prev.filter((m) => !gone.has(m.id)) : prev))
   }, [])
+
+  // Keep the per-channel cache in step with what is on screen: every update to
+  // `messages` (live messages.created frame, reconcile, paged history, send, edit,
+  // delete) stores the current list under the channel it belongs to, so switching
+  // back repaints it instantly (CA4). messagesChannelRef — not activeChannel — is
+  // used so an update still in flight for the previous channel is stored under that
+  // channel, not the one just opened. Only cache a channel whose list is actually
+  // loaded: never while its first page is still loading or after its GET failed, or
+  // a channel left mid-load would be cached as [] and show "no messages yet" next
+  // time instead of loading again.
+  useEffect(() => {
+    if (loadingMessages || messagesError) return
+    const channelId = messagesChannelRef.current
+    if (channelId) putCache(channelId, messages)
+  }, [messages, loadingMessages, messagesError, putCache])
 
   // The latest page (60 s reconcile / fallback poll) is authoritative for its
   // time window: a loaded message inside it that the backend no longer returns
@@ -3971,38 +4053,70 @@ export default function ChatScreen() {
               : { padding: 16, gap: 13 }
           }
           ListEmptyComponent={
-            <View style={{ alignItems: "center", gap: 10, maxWidth: 320 }}>
-              <View
-                style={{
-                  width: 52,
-                  height: 52,
-                  borderRadius: 9999,
-                  alignItems: "center",
-                  justifyContent: "center",
-                  backgroundColor: "rgba(55,214,192,0.12)",
-                }}
-              >
-                <Ionicons
-                  name={activeSuspended ? "lock-closed-outline" : "chatbubbles-outline"}
-                  size={26}
-                  color={activeSuspended ? "#FF7F72" : "#37D6C0"}
-                />
+            loadingMessages ? (
+              // Cache miss while the first page loads: a loader, never the empty state.
+              <View style={{ alignItems: "center", gap: 10 }}>
+                <ActivityIndicator size="small" color="#37D6C0" />
+                <Text style={{ color: "#8DA8AC", fontSize: 12.5 }}>Cargando mensajes…</Text>
               </View>
-              <Text style={{ color: "#E6F3F3", fontSize: 15, fontWeight: "700" }}>
-                {activeSuspended
-                  ? "Este servidor está suspendido"
-                  : activeServer
-                    ? "Todavía no hay mensajes"
-                    : "No tenés servidores todavía"}
-              </Text>
-              <Text style={{ color: "#8DA8AC", fontSize: 12.5, textAlign: "center", lineHeight: 18 }}>
-                {activeSuspended
-                  ? "El staff de Discordia lo suspendió mientras revisa una denuncia. Su contenido se conserva y vas a poder volver a usarlo cuando se levante la suspensión."
-                  : activeServer
-                    ? `Escribí el primero en #${channel?.name ?? "este canal"} y arrancá la conversación.`
-                    : "Creá uno con el botón + o unite con una invitación."}
-              </Text>
-            </View>
+            ) : messagesError ? (
+              // The history GET failed with nothing cached to fall back on: offer a retry.
+              <View style={{ alignItems: "center", gap: 10, maxWidth: 320 }}>
+                <Text style={{ color: "#E6F3F3", fontSize: 15, fontWeight: "700" }}>
+                  No se pudieron cargar los mensajes
+                </Text>
+                <Text style={{ color: "#8DA8AC", fontSize: 12.5, textAlign: "center", lineHeight: 18 }}>
+                  Revisá tu conexión e intentá de nuevo.
+                </Text>
+                <Pressable
+                  onPress={() => setReloadToken((t) => t + 1)}
+                  accessibilityRole="button"
+                  accessibilityLabel="Reintentar cargar los mensajes"
+                  style={{
+                    paddingVertical: 8,
+                    paddingHorizontal: 16,
+                    borderRadius: 8,
+                    borderWidth: 1,
+                    borderColor: "#37D6C0",
+                  }}
+                >
+                  <Text style={{ color: "#37D6C0", fontSize: 13, fontWeight: "700" }}>Reintentar</Text>
+                </Pressable>
+              </View>
+            ) : (
+              <View style={{ alignItems: "center", gap: 10, maxWidth: 320 }}>
+                <View
+                  style={{
+                    width: 52,
+                    height: 52,
+                    borderRadius: 9999,
+                    alignItems: "center",
+                    justifyContent: "center",
+                    backgroundColor: "rgba(55,214,192,0.12)",
+                  }}
+                >
+                  <Ionicons
+                    name={activeSuspended ? "lock-closed-outline" : "chatbubbles-outline"}
+                    size={26}
+                    color={activeSuspended ? "#FF7F72" : "#37D6C0"}
+                  />
+                </View>
+                <Text style={{ color: "#E6F3F3", fontSize: 15, fontWeight: "700" }}>
+                  {activeSuspended
+                    ? "Este servidor está suspendido"
+                    : activeServer
+                      ? "Todavía no hay mensajes"
+                      : "No tenés servidores todavía"}
+                </Text>
+                <Text style={{ color: "#8DA8AC", fontSize: 12.5, textAlign: "center", lineHeight: 18 }}>
+                  {activeSuspended
+                    ? "El staff de Discordia lo suspendió mientras revisa una denuncia. Su contenido se conserva y vas a poder volver a usarlo cuando se levante la suspensión."
+                    : activeServer
+                      ? `Escribí el primero en #${channel?.name ?? "este canal"} y arrancá la conversación.`
+                      : "Creá uno con el botón + o unite con una invitación."}
+                </Text>
+              </View>
+            )
           }
           renderItem={({ item: msg }) => {
             const authorInitials = msg.author.split(" ").map((n) => n[0]).join("")
