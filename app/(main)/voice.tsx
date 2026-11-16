@@ -93,16 +93,15 @@ export default function VoiceScreen() {
           {voice.callStatus === "connecting" ? "Conectando..." : isOutgoing ? "Llamando..." : "Entrando..."}
         </Text>
         <Text style={{ color: "#8DA8AC", fontSize: 13, marginTop: 6 }}>{peerName}</Text>
-        {isOutgoing && voice.callStatus === "ringing" ? (
+        {voice.callStatus === "connecting" ? <ActivityIndicator color="#37D6C0" style={{ marginTop: 20 }} /> : null}
+        {voice.callStatus === "ringing" && !isOutgoing ? null : (
           <PressableScale
-            onPress={() => voice.rejectIncomingCall()}
+            onPress={() => (voice.callStatus === "ringing" ? voice.rejectIncomingCall() : voice.endCurrentCall())}
             hoverStyle={{ backgroundColor: "#FF6B5C" }}
             style={{ marginTop: 24, borderRadius: 10, paddingVertical: 11, paddingHorizontal: 20, backgroundColor: "#FF7F72" }}
           >
             <Text style={{ fontWeight: "700", fontSize: 14, color: "#04211D" }}>Cancelar</Text>
           </PressableScale>
-        ) : (
-          <ActivityIndicator color="#37D6C0" style={{ marginTop: 20 }} />
         )}
       </View>
     )
@@ -126,6 +125,15 @@ export default function VoiceScreen() {
             backgroundColor: "rgba(255,255,255,0.03)",
           }}
         >
+          <PressableScale
+            onPress={() => router.push("/(main)/chat")}
+            accessibilityLabel="Volver al chat"
+            pressedScale={0.9}
+            hoverStyle={{ backgroundColor: "rgba(255,255,255,0.10)" }}
+            style={{ width: 34, height: 34, borderRadius: 9999, alignItems: "center", justifyContent: "center", marginLeft: -6 }}
+          >
+            <Ionicons name="chevron-back" size={20} color="#E6F3F3" />
+          </PressableScale>
           <Ionicons name="call" size={17} color="#4FD69C" />
           <View style={{ flex: 1 }}>
             <Text style={{ color: "#E6F3F3", fontWeight: "700", fontSize: 13.5 }} numberOfLines={1}>
