@@ -80,6 +80,8 @@ import {
   markAllRead,
   withoutChannel,
   withoutServer,
+  getNotificationHistory,
+  timeAgo,
   getNotificationPrefs,
   setNotificationLevel,
   withLevel,
@@ -98,6 +100,7 @@ import {
 } from "@/lib/api"
 import type { MentionSuggestion, MentionRole } from "@/lib/api/mentions"
 import type {
+  AppNotification,
   Server,
   Category,
   RoleGroup,
@@ -460,6 +463,17 @@ export default function ChatScreen() {
   // Preferencias de notificación (HU-4): qué actividad avisa cada canal y servidor.
   const [prefs, setPrefs] = useState<NotificationPrefs>(EMPTY_PREFS)
   const savingPrefsRef = useRef(0)
+
+  // Centro de notificaciones (HU-5): historial de las menciones recientes en un solo lugar.
+  const [notifOpen, setNotifOpen] = useState(false)
+  const [notifItems, setNotifItems] = useState<AppNotification[]>([])
+  const [notifDays, setNotifDays] = useState(7)
+  const [notifLoading, setNotifLoading] = useState(false)
+  const [notifError, setNotifError] = useState("")
+  const [notifChannelNames, setNotifChannelNames] = useState<Record<string, string>>({})
+  // Canal que hay que abrir cuando termina de cargar el servidor al que se saltó desde una
+  // notificación (si no, se abriría el primer canal de texto).
+  const pendingChannelRef = useRef("")
   const reloadUnreadRef = useRef<(() => void) | null>(null)
 
   // Add-server modal (HU-1 create / HU-3 join)
@@ -740,8 +754,11 @@ export default function ChatScreen() {
     getCategories(activeServer)
       .then((cats) => {
         setCategories(cats)
-        const firstText = cats.flatMap((c) => c.channels).find((c) => c.type === "text")
-        setActiveChannel(firstText ? firstText.id : "")
+        const textChannels = cats.flatMap((c) => c.channels).filter((c) => c.type === "text")
+        const pending = pendingChannelRef.current
+        pendingChannelRef.current = ""
+        const target = textChannels.find((c) => c.id === pending) ?? textChannels[0]
+        setActiveChannel(target ? target.id : "")
       })
       .catch((err) => {
         if (err instanceof ApiError && err.status === 423) setServerSuspended(activeServer, true)
@@ -1311,6 +1328,53 @@ export default function ChatScreen() {
         savingPrefsRef.current -= 1
       })
   }
+
+  // HU-5: abre el centro de notificaciones y trae las menciones recientes (CA1). Sin menciones la
+  // lista viene vacía y el panel lo indica (CA2).
+  const loadNotifications = async () => {
+    const ids = realServerIds ? realServerIds.split(",") : []
+    setNotifLoading(true)
+    setNotifError("")
+    try {
+      const history = await getNotificationHistory(ids)
+      setNotifItems(history.items)
+      setNotifDays(history.days)
+      // Nombres de canal: el servidor abierto ya los tiene; el resto se pide una vez por servidor.
+      const names: Record<string, string> = {}
+      for (const ch of categories.flatMap((c) => c.channels)) names[ch.id] = ch.name
+      const others = [...new Set(history.items.map((n) => n.serverId))].filter((id) => id !== activeServer)
+      await Promise.all(
+        others.map((id) =>
+          getCategories(id)
+            .then((cats) => {
+              for (const ch of cats.flatMap((c) => c.channels)) names[ch.id] = ch.name
+            })
+            .catch(() => undefined),
+        ),
+      )
+      setNotifChannelNames(names)
+    } catch (err) {
+      setNotifError(friendlyError(err))
+    } finally {
+      setNotifLoading(false)
+    }
+  }
+  const openNotifications = () => {
+    setNotifOpen(true)
+    loadNotifications()
+  }
+  // CA1: acceso directo a la conversación de cada notificación.
+  const openNotification = (n: AppNotification) => {
+    setNotifOpen(false)
+    if (n.serverId === activeServer) {
+      setActiveChannel(n.channelId)
+    } else {
+      pendingChannelRef.current = n.channelId
+      setActiveServer(n.serverId)
+    }
+    if (isNarrow) setMobilePane("chat")
+  }
+  const pendingMentions = servers.reduce((total, s) => total + serverUnread(s).mentions, 0)
 
   // HU-4/HU-5 gating: load the current user's admin permissions for the active
   // real server, so the banner config and role manager can be surfaced to
@@ -3353,7 +3417,48 @@ export default function ChatScreen() {
             </PressableScale>
           </View>
         </ScrollView>
-        {!isNarrow ? (
+        {(
+          <View
+            {...(Platform.OS === "web"
+              ? { onMouseEnter: showTooltip("Notificaciones"), onMouseLeave: hideTooltip }
+              : {})}
+          >
+            <PressableScale
+              onPress={openNotifications}
+              accessibilityLabel={
+                pendingMentions > 0 ? `Notificaciones, ${pendingMentions} menciones sin leer` : "Notificaciones"
+              }
+              pressedScale={0.88}
+              hoverStyle={{ backgroundColor: "rgba(55,214,192,0.14)", borderColor: "rgba(55,214,192,0.55)" }}
+              style={{
+                alignItems: "center",
+                justifyContent: "center",
+                width: 34,
+                height: 34,
+                borderRadius: 15,
+                backgroundColor: "rgba(255,255,255,0.10)",
+                borderWidth: 1,
+                borderColor: "rgba(255,255,255,0.13)",
+              }}
+            >
+              <Ionicons name="notifications-outline" size={17} color="#37D6C0" />
+              {pendingMentions > 0 ? (
+                <View
+                  style={{
+                    position: "absolute",
+                    top: 4,
+                    right: 4,
+                    width: 8,
+                    height: 8,
+                    borderRadius: 4,
+                    backgroundColor: "#FF6B6B",
+                  }}
+                />
+              ) : null}
+            </PressableScale>
+          </View>
+        )}
+        {(
           <View
             {...(Platform.OS === "web"
               ? { onMouseEnter: showTooltip("Marcar todo como leído"), onMouseLeave: hideTooltip }
@@ -3382,7 +3487,7 @@ export default function ChatScreen() {
               <Ionicons name="checkmark-done-outline" size={17} color="#37D6C0" />
             </PressableScale>
           </View>
-        ) : null}
+        )}
       </View>
 
      <Modal visible={serverMenu !== null} transparent animationType="none" onRequestClose={closeServerMenu}>
@@ -3526,6 +3631,126 @@ export default function ChatScreen() {
         </Pressable>
       </Modal>
 
+      {/* Centro de notificaciones (HU-5): menciones recientes, de la más nueva a la más vieja. */}
+      <Modal visible={notifOpen} transparent animationType="fade" onRequestClose={() => setNotifOpen(false)}>
+        <Pressable
+          style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)", alignItems: "center", justifyContent: "center", padding: 16 }}
+          onPress={() => setNotifOpen(false)}
+          accessibilityLabel="Cerrar notificaciones"
+        >
+          <Pressable
+            onPress={() => undefined}
+            style={{
+              width: "100%",
+              maxWidth: 480,
+              maxHeight: "80%",
+              borderRadius: 14,
+              backgroundColor: "#151D23",
+              borderWidth: 1,
+              borderColor: "rgba(255,255,255,0.13)",
+              overflow: "hidden",
+            }}
+          >
+            <View
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 8,
+                paddingHorizontal: 16,
+                paddingVertical: 14,
+                borderBottomWidth: 1,
+                borderBottomColor: "rgba(255,255,255,0.13)",
+              }}
+            >
+              <View style={{ flex: 1 }}>
+                <Text style={{ color: "#E6F3F3", fontSize: 15, fontWeight: "800" }}>Notificaciones</Text>
+                <Text style={{ color: "#8DA8AC", fontSize: 11, marginTop: 1 }}>
+                  Menciones de los últimos {notifDays} días
+                </Text>
+              </View>
+              <TouchableOpacity onPress={() => setNotifOpen(false)} accessibilityLabel="Cerrar" hitSlop={8}>
+                <Ionicons name="close" size={20} color="#8DA8AC" />
+              </TouchableOpacity>
+            </View>
+            {notifLoading && notifItems.length === 0 ? (
+              <View style={{ padding: 32, alignItems: "center" }}>
+                <ActivityIndicator color="#37D6C0" />
+              </View>
+            ) : notifError ? (
+              <View style={{ padding: 24, alignItems: "center", gap: 10 }}>
+                <Text style={{ color: "#FF9E94", fontSize: 12.5, textAlign: "center" }}>{notifError}</Text>
+                <PressableScale
+                  onPress={loadNotifications}
+                  style={{ paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8, backgroundColor: "rgba(55,214,192,0.14)" }}
+                >
+                  <Text style={{ color: "#37D6C0", fontSize: 12.5, fontWeight: "700" }}>Reintentar</Text>
+                </PressableScale>
+              </View>
+            ) : notifItems.length === 0 ? (
+              // CA2: sin actividad relevante reciente.
+              <View style={{ padding: 32, alignItems: "center", gap: 8 }}>
+                <Ionicons name="notifications-off-outline" size={30} color="#5E7E82" />
+                <Text style={{ color: "#E6F3F3", fontSize: 14, fontWeight: "700" }}>
+                  No hay notificaciones para mostrar
+                </Text>
+                <Text style={{ color: "#8DA8AC", fontSize: 12, textAlign: "center" }}>
+                  Cuando te mencionen, lo vas a ver acá durante {notifDays} días.
+                </Text>
+              </View>
+            ) : (
+              <FlatList
+                data={notifItems}
+                keyExtractor={(n) => n.id}
+                renderItem={({ item: n }) => {
+                  const channelName = notifChannelNames[n.channelId]
+                  const serverName = servers.find((sv) => sv.id === n.serverId)?.name
+                  const initials = n.author.split(" ").map((w) => w[0]).join("").slice(0, 2)
+                  return (
+                    <PressableScale
+                      onPress={() => openNotification(n)}
+                      accessibilityLabel={`${n.author} ${n.kind === "everyone" ? "mencionó a todos" : "te mencionó"} en ${
+                        channelName ? `#${channelName}` : "un canal"
+                      }`}
+                      hoverStyle={{ backgroundColor: "rgba(55,214,192,0.08)" }}
+                      style={{
+                        flexDirection: "row",
+                        gap: 10,
+                        paddingHorizontal: 16,
+                        paddingVertical: 12,
+                        borderBottomWidth: 1,
+                        borderBottomColor: "rgba(255,255,255,0.07)",
+                        backgroundColor: n.unread ? "rgba(55,214,192,0.07)" : "transparent",
+                      }}
+                    >
+                      <Avatar initials={initials} />
+                      <View style={{ flex: 1, gap: 2 }}>
+                        <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                          <Text style={{ flex: 1, color: "#E6F3F3", fontSize: 12.5 }} numberOfLines={1}>
+                            <Text style={{ fontWeight: "700" }}>{n.author}</Text>
+                            {n.kind === "everyone" ? " mencionó a todos" : " te mencionó"}
+                          </Text>
+                          <Text style={{ color: "#8DA8AC", fontSize: 10.5 }}>{timeAgo(n.createdAt)}</Text>
+                          {n.unread ? (
+                            <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: "#37D6C0" }} />
+                          ) : null}
+                        </View>
+                        <Text style={{ color: "#37D6C0", fontSize: 11, fontWeight: "600" }} numberOfLines={1}>
+                          {channelName ? `#${channelName}` : "Canal"}
+                          {serverName ? ` · ${serverName}` : ""}
+                        </Text>
+                        <Text style={{ color: "#B7CDD0", fontSize: 12 }} numberOfLines={2}>
+                          {n.content}
+                        </Text>
+                      </View>
+                    </PressableScale>
+                  )
+                }}
+              />
+            )}
+          </Pressable>
+        </Pressable>
+      </Modal>
+
       {/* Server rail hover tooltip (web only) */}
       {Platform.OS === "web" && tooltip ? (
         <View
@@ -3568,29 +3793,6 @@ export default function ChatScreen() {
           borderRightColor: "rgba(255,255,255,0.13)",
         }}
       >
-        {isNarrow ? (
-          <PressableScale
-            onPress={handleMarkAllRead}
-            disabled={!hasAnyUnread}
-            accessibilityLabel="Marcar todo como leído"
-            hoverStyle={{ backgroundColor: "rgba(55,214,192,0.14)" }}
-            style={{
-              flexDirection: "row",
-              alignItems: "center",
-              gap: 8,
-              paddingHorizontal: 14,
-              paddingVertical: 11,
-              borderBottomWidth: 1,
-              borderBottomColor: "rgba(255,255,255,0.13)",
-              opacity: hasAnyUnread ? 1 : 0.4,
-            }}
-          >
-            <Ionicons name="checkmark-done-outline" size={16} color="#37D6C0" />
-            <Text style={{ color: "#37D6C0", fontSize: 13, fontWeight: "700" }}>
-              Marcar todo como leído
-            </Text>
-          </PressableScale>
-        ) : null}
         {/* Server name header: name on its own row so long names stay readable,
             actions on a compact row underneath. Hidden when no real server is
             selected (e.g. the user has none) so Invitar/Salir never show for an

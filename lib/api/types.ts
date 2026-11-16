@@ -249,6 +249,21 @@ export interface UnreadCounts {
   serverId?: string
 }
 
+// Una entrada del centro de notificaciones: una mención al usuario, con lo necesario para abrir la
+// conversación. `kind`: "mention" lo nombraron (directo o por un rol), "everyone" fue @everyone.
+export interface AppNotification {
+  id: string
+  channelId: string
+  serverId: string
+  authorId: string
+  author: string
+  content: string
+  kind: "mention" | "everyone"
+  // Todavía no leyó el canal hasta ese mensaje.
+  unread: boolean
+  createdAt: string
+}
+
 // Qué actividad notifica un canal o servidor: todos los mensajes, solo menciones o ninguna.
 export type NotificationLevel = "all" | "mentions" | "none"
 

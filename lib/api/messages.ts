@@ -49,9 +49,21 @@ export function toMessage(msg: BackendMessage, authorName: string): Message {
   }
 }
 
-// El servicio de mensajes solo guarda ids de autor: los nombres se piden al servicio de usuarios y
 // se recuerdan, porque el historial del canal abierto se vuelve a consultar cada pocos segundos.
 const authorNames = new Map<string, string>()
+
+// Nombres de autores por id, con la misma memoria que el historial de mensajes.
+export async function resolveAuthorNames(ids: string[]): Promise<Map<string, string>> {
+  const missing = [...new Set(ids)].filter((id) => !authorNames.has(id))
+  if (missing.length > 0) {
+    try {
+      for (const u of await getUsersBatch(missing)) authorNames.set(u.id, u.name)
+    } catch {
+      // Sin nombres igual se muestra la lista.
+    }
+  }
+  return new Map(ids.map((id) => [id, authorNames.get(id) ?? "Usuario"]))
+}
 
 export async function hydrateAuthors(list: BackendMessage[]): Promise<Message[]> {
   const missing = [...new Set(list.map((m) => m.author_id))].filter((id) => !authorNames.has(id))
