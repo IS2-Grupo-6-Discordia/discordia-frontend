@@ -433,6 +433,10 @@ export default function ChatScreen() {
   // from historyError, which is the older-page (HU-6) pagination error.
   const [loadingMessages, setLoadingMessages] = useState(false)
   const [messagesError, setMessagesError] = useState(false)
+  // Only reveal the "Cargando mensajes…" text if the first page is still in flight
+  // after a short grace period. A prefetched or warm channel answers well under it,
+  // so switching channels never flashes a loader — it just shows the messages.
+  const [showLoader, setShowLoader] = useState(false)
   // Bumped by "Reintentar" to re-run the channel load without changing channel.
   const [reloadToken, setReloadToken] = useState(0)
   // In-memory, per-channel cache of the last messages shown, so switching back to
@@ -886,6 +890,34 @@ export default function ChatScreen() {
     channelCacheRef.current.clear()
   }, [activeServer, user?.id])
 
+  // Prefetch the first page of every real text channel as soon as the channel list
+  // loads, so switching channels is an instant cache hit instead of a GET-then-loader.
+  // A seed only fills an empty cache slot: it never clobbers the list the user is
+  // actively viewing or revalidating, and a failed prefetch just leaves that channel
+  // to load on demand. Guarded by `active` so a response from a previous server (after
+  // the cache was cleared) is discarded instead of seeding the new one.
+  useEffect(() => {
+    if (!activeServer || !isRealServerId(activeServer) || activeSuspended) return
+    const textChannelIds = categories
+      .flatMap((c) => c.channels)
+      .filter((ch) => ch.type === "text" && UUID_RE.test(ch.id))
+      .map((ch) => ch.id)
+    if (textChannelIds.length === 0) return
+    let active = true
+    for (const channelId of textChannelIds) {
+      if (channelCacheRef.current.has(channelId)) continue
+      getMessages(channelId)
+        .then((msgs) => {
+          if (!active) return
+          if (!channelCacheRef.current.has(channelId)) putCache(channelId, msgs)
+        })
+        .catch(() => {})
+    }
+    return () => {
+      active = false
+    }
+  }, [activeServer, activeSuspended, categories, putCache])
+
   // --- Indicadores de no leído (CA1 canal, CA2 servidor, CA3 menciones) ---
   // Solo los servidores reales (id UUID) tienen mensajes en el backend.
   const realServerIds = servers
@@ -956,6 +988,18 @@ export default function ChatScreen() {
     const channelId = messagesChannelRef.current
     if (channelId) putCache(channelId, messages)
   }, [messages, loadingMessages, messagesError, putCache])
+
+  // Grace period before the loader text shows: a prefetched/warm channel resolves
+  // well under it, so a channel switch paints the messages with no loader flash. The
+  // text only appears if the first page is genuinely slow (e.g. a cold backend).
+  useEffect(() => {
+    if (!loadingMessages) {
+      setShowLoader(false)
+      return
+    }
+    const timer = setTimeout(() => setShowLoader(true), 300)
+    return () => clearTimeout(timer)
+  }, [loadingMessages])
 
   // The latest page (60 s reconcile / fallback poll) is authoritative for its
   // time window: a loaded message inside it that the backend no longer returns
@@ -4322,11 +4366,15 @@ export default function ChatScreen() {
           }
           ListEmptyComponent={
             loadingMessages ? (
-              // Cache miss while the first page loads: a loader, never the empty state.
-              <View style={{ alignItems: "center", gap: 10 }}>
-                <ActivityIndicator size="small" color="#37D6C0" />
-                <Text style={{ color: "#8DA8AC", fontSize: 12.5 }}>Cargando mensajes…</Text>
-              </View>
+              // Cache miss while the first page loads. During the grace period show
+              // nothing (never the "no messages yet" empty state); only reveal the
+              // loader if the page is genuinely slow, so a fast switch never flashes it.
+              showLoader ? (
+                <View style={{ alignItems: "center", gap: 10 }}>
+                  <ActivityIndicator size="small" color="#37D6C0" />
+                  <Text style={{ color: "#8DA8AC", fontSize: 12.5 }}>Cargando mensajes…</Text>
+                </View>
+              ) : null
             ) : messagesError ? (
               // The history GET failed with nothing cached to fall back on: offer a retry.
               <View style={{ alignItems: "center", gap: 10, maxWidth: 320 }}>
