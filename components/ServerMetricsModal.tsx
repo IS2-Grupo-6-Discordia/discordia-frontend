@@ -7,9 +7,13 @@ import {
   getServerMetrics,
   hasNoActivity,
   lastDaysPeriod,
+  membersLeftIn,
+  type DailyMembers,
   type DailyMessages,
+  type MemberGrowth,
   type ServerMetrics,
 } from "@/lib/api/metrics"
+import MetricsBarChart, { type ChartBar } from "./MetricsBarChart"
 import ModalShell from "./ModalShell"
 
 interface ServerMetricsModalProps {
@@ -19,33 +23,45 @@ interface ServerMetricsModalProps {
   onClose: () => void
 }
 
-const CHART_HEIGHT = 120
 // Beyond this many days a bar per day gets too thin: group the bars by week.
 const MAX_DAILY_BARS = 92
-
-interface Bar {
-  label: string
-  value: number
-}
 
 function formatDay(isoDate: string): string {
   const [y, m, d] = isoDate.split("-").map(Number)
   return new Date(y, m - 1, d).toLocaleDateString("es-AR", { day: "2-digit", month: "2-digit" })
 }
 
-function toBars(daily: DailyMessages[]): Bar[] {
-  if (daily.length <= MAX_DAILY_BARS) {
-    return daily.map((d) => ({ label: formatDay(d.date), value: d.messagesSent }))
+function count(n: number, singular: string, plural: string): string {
+  return `${n.toLocaleString("es-AR")} ${n === 1 ? singular : plural}`
+}
+
+// Daily entries, or one entry per week (7 days starting at the first one) for long periods.
+function groupDays<T extends { date: string }>(days: T[]): { label: string; days: T[] }[] {
+  if (days.length <= MAX_DAILY_BARS) return days.map((d) => ({ label: formatDay(d.date), days: [d] }))
+  const weeks: { label: string; days: T[] }[] = []
+  for (let i = 0; i < days.length; i += 7) {
+    const week = days.slice(i, i + 7)
+    weeks.push({ label: `Semana del ${formatDay(week[0].date)}`, days: week })
   }
-  const bars: Bar[] = []
-  for (let i = 0; i < daily.length; i += 7) {
-    const week = daily.slice(i, i + 7)
-    bars.push({
-      label: `Semana del ${formatDay(week[0].date)}`,
-      value: week.reduce((sum, d) => sum + d.messagesSent, 0),
-    })
-  }
-  return bars
+  return weeks
+}
+
+function messageBars(daily: DailyMessages[]): ChartBar[] {
+  return groupDays(daily).map(({ label, days }) => {
+    const sent = days.reduce((sum, d) => sum + d.messagesSent, 0)
+    return { label, value: sent, detail: count(sent, "mensaje", "mensajes") }
+  })
+}
+
+// A week bar shows the members at the end of the week, and the joins and leaves during it.
+function memberBars(daily: DailyMembers[]): ChartBar[] {
+  return groupDays(daily).map(({ label, days }) => {
+    const members = days[days.length - 1].members
+    const joined = days.reduce((sum, d) => sum + d.joined, 0)
+    const left = days.reduce((sum, d) => sum + d.left, 0)
+    const changes = joined === 0 && left === 0 ? "sin altas ni bajas" : `${count(joined, "alta", "altas")} · ${count(left, "baja", "bajas")}`
+    return { label, value: members, detail: `${count(members, "miembro", "miembros")} · ${changes}` }
+  })
 }
 
 function StatTile({ icon, label, value, hint }: { icon: keyof typeof Ionicons.glyphMap; label: string; value: number; hint?: string }) {
@@ -73,38 +89,49 @@ function StatTile({ icon, label, value, hint }: { icon: keyof typeof Ionicons.gl
 }
 
 function MessagesChart({ daily }: { daily: DailyMessages[] }) {
-  const bars = toBars(daily)
-  const max = Math.max(1, ...bars.map((b) => b.value))
   const weekly = daily.length > MAX_DAILY_BARS
   return (
-    <View style={{ gap: 6 }}>
-      <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "baseline" }}>
-        <Text style={{ color: "#C9DADC", fontSize: 12.5, fontWeight: "700" }}>{weekly ? "Mensajes por semana" : "Mensajes por día"}</Text>
-        <Text style={{ color: "#5E7E82", fontSize: 11 }}>máx. {max.toLocaleString("es-AR")}</Text>
+    <MetricsBarChart
+      title={weekly ? "Mensajes por semana" : "Mensajes por día"}
+      bars={messageBars(daily)}
+      startLabel={formatDay(daily[0].date)}
+      endLabel={formatDay(daily[daily.length - 1].date)}
+      accessibilityLabel={`Gráfico de mensajes ${weekly ? "por semana" : "por día"}`}
+    />
+  )
+}
+
+// Métricas HU-3: shown even when nothing happened, since the member count still means something.
+function MemberGrowthChart({ growth }: { growth: MemberGrowth }) {
+  const { daily, membersAtStart, membersAtEnd } = growth
+  const weekly = daily.length > MAX_DAILY_BARS
+  const joined = daily.reduce((sum, d) => sum + d.joined, 0)
+  const left = membersLeftIn(growth)
+  const change = membersAtEnd - membersAtStart
+  const changeColor = change > 0 ? "#7FE6A0" : change < 0 ? "#FF9E94" : "#8DA8AC"
+  return (
+    <View style={{ gap: 8 }}>
+      <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+        <Text style={{ color: "#F2FAFA", fontSize: 13, fontWeight: "700" }}>
+          {membersAtStart.toLocaleString("es-AR")} → {membersAtEnd.toLocaleString("es-AR")} miembros
+        </Text>
+        <Text style={{ color: changeColor, fontSize: 12, fontWeight: "700" }}>
+          {change > 0 ? `+${change}` : change < 0 ? `−${-change}` : "sin cambios"}
+        </Text>
+        <Text style={{ color: "#5E7E82", fontSize: 11.5 }}>
+          {count(joined, "alta", "altas")} · {count(left, "baja", "bajas")}
+        </Text>
       </View>
-      <View
-        accessibilityRole="image"
-        accessibilityLabel={`Gráfico de mensajes ${weekly ? "por semana" : "por día"}`}
-        style={{ height: CHART_HEIGHT, flexDirection: "row", alignItems: "flex-end", gap: bars.length > 40 ? 1 : 3 }}
-      >
-        {bars.map((bar, i) => (
-          <View
-            key={i}
-            accessibilityLabel={`${bar.label}: ${bar.value} mensajes`}
-            style={{
-              flex: 1,
-              height: bar.value === 0 ? 2 : Math.max(4, (bar.value / max) * CHART_HEIGHT),
-              borderTopLeftRadius: 3,
-              borderTopRightRadius: 3,
-              backgroundColor: bar.value === 0 ? "rgba(255,255,255,0.08)" : "#3FD0C9",
-            }}
-          />
-        ))}
-      </View>
-      <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
-        <Text style={{ color: "#5E7E82", fontSize: 11 }}>{formatDay(daily[0].date)}</Text>
-        <Text style={{ color: "#5E7E82", fontSize: 11 }}>{formatDay(daily[daily.length - 1].date)}</Text>
-      </View>
+      <MetricsBarChart
+        title={weekly ? "Miembros por semana" : "Miembros por día"}
+        bars={memberBars(daily)}
+        startLabel={formatDay(daily[0].date)}
+        endLabel={formatDay(daily[daily.length - 1].date)}
+        scale="range"
+        color="#9B8CFF"
+        activeColor="#CFC7FF"
+        accessibilityLabel={`Gráfico de miembros ${weekly ? "por semana" : "por día"}`}
+      />
     </View>
   )
 }
@@ -190,8 +217,8 @@ export default function ServerMetricsModal({ visible, serverId, serverName, onCl
               <Ionicons name="moon-outline" size={26} color="#5E7E82" />
               <Text style={{ color: "#E6F3F3", fontSize: 14, fontWeight: "700" }}>No hubo actividad en este período</Text>
               <Text style={{ color: "#8DA8AC", fontSize: 12, lineHeight: 17, textAlign: "center" }}>
-                En los últimos {periodLabel} nadie envió mensajes ni se unió al servidor. Hoy tiene {metrics.totalMembers.toLocaleString("es-AR")}{" "}
-                {metrics.totalMembers === 1 ? "miembro" : "miembros"}.
+                En los últimos {periodLabel} nadie envió mensajes, se unió ni se fue del servidor. Hoy tiene{" "}
+                {count(metrics.totalMembers, "miembro", "miembros")}.
               </Text>
             </View>
           ) : (
@@ -210,8 +237,11 @@ export default function ServerMetricsModal({ visible, serverId, serverName, onCl
               <MessagesChart daily={metrics.daily} />
             </>
           )}
+          <View style={{ height: 1, backgroundColor: "rgba(255,255,255,0.08)" }} />
+          <MemberGrowthChart growth={metrics.growth} />
           <Text style={{ color: "#5E7E82", fontSize: 11, lineHeight: 15 }}>
-            Miembros activos: quienes enviaron al menos un mensaje en el período. Los mensajes borrados también cuentan como enviados.
+            Miembros activos: quienes enviaron al menos un mensaje en el período. Los mensajes borrados también cuentan como enviados. La
+            evolución de miembros se registra desde que se activó esta función: quienes se fueron antes no aparecen.
           </Text>
         </View>
       ) : null}
