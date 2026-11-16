@@ -4787,7 +4787,6 @@ export default function ChatScreen() {
               backgroundColor: "rgba(255,255,255,0.10)",
             }}
           >
-            <Text style={{ color: "#8DA8AC", opacity: 0.7 }}>＋</Text>
             <TextInput
               value={input}
               onChangeText={(value) => {
