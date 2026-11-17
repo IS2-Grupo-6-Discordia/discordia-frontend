@@ -282,13 +282,15 @@ export interface UnreadSummary {
 export interface CallIncoming {
   type: "call.incoming"
   call_id: string
-  caller_id: string
+  // The caller (the backend sends the other party as peer_id).
+  peer_id: string
   peer_name?: string
 }
 
 export interface CallAccepted {
   type: "call.accepted"
   call_id: string
+  peer_id: string
   url: string
   token: string
 }

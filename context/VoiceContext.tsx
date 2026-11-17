@@ -96,6 +96,8 @@ interface VoiceState {
   acceptIncomingCall: () => Promise<void>
   rejectIncomingCall: () => Promise<void>
   endCurrentCall: () => Promise<void>
+  // Cancels a ringing call or ends an active one.
+  hangUpCall: () => Promise<void>
 }
 
 const DROP_MESSAGES: Record<VoiceDropReason, string> = {
@@ -130,6 +132,7 @@ function cameraErrorMessage(err: unknown): string {
   return "No pudimos cambiar el estado de tu cámara. Puede que el canal no tenga video habilitado."
 }
 
+const CALL_DROPPED_MESSAGE = "La llamada se desconectó."
 const PEER_LEFT_GRACE_MS = 20_000
 const PEER_LEFT_MESSAGE = "La otra persona se desconectó, así que cortamos la llamada."
 
@@ -166,6 +169,38 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
     setScreenShareError("")
   }, [])
 
+  // Connects to LiveKit for `attempt` and installs the room as the current one.
+  // Shared by channel joins (HU-17) and private calls (HU-50), so both keep the
+  // same participants sync, abort and supersede rules. Resolves false if a newer
+  // attempt (or leave) replaced this one; rejects with the connect error.
+  const connectRoom = useCallback(
+    async (attempt: number, url: string, token: string, onDropped: (reason: VoiceDropReason) => void) => {
+      const abort = new AbortController()
+      abortRef.current = abort
+      try {
+        const handle = await connectVoiceRoom(url, token, {
+          signal: abort.signal,
+          onParticipants: (list) => {
+            if (attemptRef.current === attempt) setRoomParticipants(list)
+          },
+          onDropped: (reason) => {
+            if (attemptRef.current === attempt) onDropped(reason)
+          },
+        })
+        if (attemptRef.current !== attempt) {
+          await handle.disconnect()
+          return false
+        }
+        handleRef.current = handle
+        setStatus("connected")
+        return true
+      } finally {
+        if (abortRef.current === abort) abortRef.current = null
+      }
+    },
+    [],
+  )
+
   const join = useCallback(
     async (target: VoiceChannelRef) => {
       if (!voiceSupported) {
@@ -198,42 +233,27 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
         setChannel(target)
         setRoomParticipants([])
 
-        const abort = new AbortController()
-        abortRef.current = abort
         try {
-          const handle = await connectVoiceRoom(access.url, access.token, {
-            signal: abort.signal,
-            onParticipants: (list) => {
-              if (attemptRef.current === attempt) setRoomParticipants(list)
-            },
-            onDropped: (reason) => {
-              if (attemptRef.current !== attempt) return
-              reset()
-              setDropNotice(DROP_MESSAGES[reason])
-            },
+          await connectRoom(attempt, access.url, access.token, (reason) => {
+            reset()
+            setDropNotice(DROP_MESSAGES[reason])
           })
-          if (attemptRef.current !== attempt) {
-            await handle.disconnect()
-            return
-          }
-          handleRef.current = handle
-          setStatus("connected")
         } catch (err) {
           // Cancelled by leave() or replaced by a newer join: nothing to report.
           if (err instanceof VoiceAbortedError || attemptRef.current !== attempt) return
           reset()
           throw new Error(joinErrorMessage(err))
-        } finally {
-          if (abortRef.current === abort) abortRef.current = null
         }
       } finally {
         // leave() already released the lock for the next join.
         if (attemptRef.current === attempt) busyRef.current = false
       }
     },
-    [reset],
+    [reset, connectRoom],
   )
 
+  // Cancels the attempt in flight (if any) and closes the LiveKit room. Shared
+  // by channel hang-ups (HU-18) and private calls (HU-50).
   const leave = useCallback(async () => {
     attemptRef.current++
     busyRef.current = false
@@ -418,6 +438,27 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
     }
   }, [status, callStatus, user?.name])
 
+  // Connects either side of an accepted call to its LiveKit room.
+  const connectCall = useCallback(
+    async (attempt: number, url: string, token: string) => {
+      setCallStatus("connecting")
+      try {
+        const connected = await connectRoom(attempt, url, token, () => {
+          reset()
+          resetCall()
+          setDropNotice(CALL_DROPPED_MESSAGE)
+        })
+        if (connected) setCallStatus("connected")
+      } catch (err) {
+        if (err instanceof VoiceAbortedError || attemptRef.current !== attempt) return
+        reset()
+        resetCall()
+        throw new Error(joinErrorMessage(err))
+      }
+    },
+    [connectRoom, reset, resetCall],
+  )
+
   // Accept an incoming call (callee side).
   const acceptIncomingCall = useCallback(async () => {
     if (!call || callStatus !== "ringing" || call.direction !== "incoming") return
@@ -426,44 +467,21 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
     try {
       setCallStatus("connecting")
       const attempt = ++attemptRef.current
-      const access = await apiAcceptCall(call.id)
-      if (attemptRef.current !== attempt) return
-
-      const abort = new AbortController()
-      abortRef.current = abort
-
-      const handle = await connectVoiceRoom(access.url, access.token, {
-        signal: abort.signal,
-        onParticipants: (list) => {
-          if (attemptRef.current === attempt) setRoomParticipants(list)
-        },
-        onDropped: () => {
-          if (attemptRef.current !== attempt) return
-          reset()
-          resetCall()
-          setDropNotice("La llamada se desconectó.")
-        },
-      })
-
-      if (attemptRef.current !== attempt) {
-        await handle.disconnect()
-        return
+      let access
+      try {
+        access = await apiAcceptCall(call.id)
+      } catch (err) {
+        resetCall()
+        throw new Error(friendlyError(err))
       }
-      handleRef.current = handle
-      setStatus("connected")
-      setCallStatus("connected")
-    } catch (err) {
-      if (err instanceof VoiceAbortedError) return
-      resetCall()
-      reset()
-      throw new Error(friendlyError(err))
+      if (attemptRef.current !== attempt) return
+      await connectCall(attempt, access.url, access.token)
     } finally {
       callBusyRef.current = false
-      if (abortRef.current) abortRef.current = null
     }
-  }, [call, callStatus, reset, resetCall])
+  }, [call, callStatus, connectCall, resetCall])
 
-  // Reject or cancel a ringing call.
+  // Reject (callee) or cancel (caller) a ringing call.
   const rejectIncomingCall = useCallback(async () => {
     if (!call || callStatus !== "ringing") return
     try {
@@ -474,24 +492,19 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
     resetCall()
   }, [call, callStatus, resetCall])
 
-  // Hang up an active call.
+  // Hang up an active call: tell the backend and close the room like a channel.
   const endCurrentCall = useCallback(async () => {
     if (!call) return
-    attemptRef.current++
-    abortRef.current?.abort()
-    abortRef.current = null
     callBusyRef.current = false
-    try {
-      await apiEndCall(call.id)
-    } catch {
-      // Best effort.
-    }
-    const handle = handleRef.current
-    handleRef.current = null
-    if (handle) await handle.disconnect()
-    reset()
+    await Promise.all([apiEndCall(call.id).catch(() => undefined), leave()])
     resetCall()
-  }, [call, reset, resetCall])
+  }, [call, leave, resetCall])
+
+  // The single "hang up" button: cancels while ringing, ends once answered.
+  const hangUpCall = useCallback(
+    () => (callStatus === "ringing" ? rejectIncomingCall() : endCurrentCall()),
+    [callStatus, rejectIncomingCall, endCurrentCall],
+  )
 
   // Handle call signaling messages from the voice WebSocket.
   const handleCallMessage = useCallback((msg: CallSignalingMessage) => {
@@ -499,45 +512,15 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
       case "call.incoming":
         // Ignore if already in voice or in a call.
         if (status !== "idle" || callStatus !== "idle") return
-        setCall({ id: msg.call_id, peerId: msg.caller_id, peerName: msg.peer_name, direction: "incoming" })
+        setCall({ id: msg.call_id, peerId: msg.peer_id, peerName: msg.peer_name, direction: "incoming" })
         setCallStatus("ringing")
         break
 
-      case "call.accepted": {
+      case "call.accepted":
         // Caller side: the callee accepted, connect to LiveKit.
         if (!call || call.id !== msg.call_id || call.direction !== "outgoing") return
-        setCallStatus("connecting")
-        const attempt = ++attemptRef.current
-        const abort = new AbortController()
-        abortRef.current = abort
-        connectVoiceRoom(msg.url, msg.token, {
-          signal: abort.signal,
-          onParticipants: (list) => {
-            if (attemptRef.current === attempt) setRoomParticipants(list)
-          },
-          onDropped: () => {
-            if (attemptRef.current !== attempt) return
-            reset()
-            resetCall()
-            setDropNotice("La llamada se desconectó.")
-          },
-        }).then((handle) => {
-          if (attemptRef.current !== attempt) {
-            handle.disconnect()
-            return
-          }
-          handleRef.current = handle
-          setStatus("connected")
-          setCallStatus("connected")
-        }).catch((err) => {
-          if (err instanceof VoiceAbortedError || attemptRef.current !== attempt) return
-          reset()
-          resetCall()
-        }).finally(() => {
-          if (abortRef.current === abort) abortRef.current = null
-        })
+        connectCall(++attemptRef.current, msg.url, msg.token).catch((err: Error) => setDropNotice(err.message))
         break
-      }
 
       case "call.rejected":
       case "call.missed":
@@ -546,15 +529,12 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
 
       case "call.ended":
         if (call?.id === msg.call_id) {
-          const handle = handleRef.current
-          handleRef.current = null
-          handle?.disconnect()
-          reset()
+          leave()
           resetCall()
         }
         break
     }
-  }, [call, callStatus, status, reset, resetCall])
+  }, [call, callStatus, status, connectCall, leave, resetCall])
 
   useCallSignaling(!!user, handleCallMessage)
 
@@ -611,6 +591,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
         acceptIncomingCall,
         rejectIncomingCall,
         endCurrentCall,
+        hangUpCall,
       }}
     >
       {children}
