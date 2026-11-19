@@ -1,5 +1,53 @@
 # discordia-cliente-web
-Aplicación web para clientes de Discordia
+
+Cliente de Discordia para usuarios finales: una sola base de código para la web y para Android, hecha con Expo (React Native + React Native Web), TypeScript, Expo Router y NativeWind. Habla con el backend a través del gateway (`EXPO_PUBLIC_API_URL`), y para el tiempo real abre WebSockets directos a mensajes y voz con un ticket que emite el gateway.
+
+## Setup local
+
+Requisitos: Node 22 y npm.
+
+```bash
+cp .env.example .env
+npm install
+npm run web        # http://localhost:8081
+```
+
+Para tener backend, levantar el stack desde el repo `root`:
+- `make core-up`: Redis, autenticación, servidores, mensajes y gateway en `http://localhost:8080`;
+- `make voice-up`: voz y LiveKit;
+- `make web`: levanta el cliente en `http://localhost:3000`.
+
+El CORS del gateway local permite `http://localhost:3000` y `http://localhost:8081` (`gateway/.env.example`): si el cliente corre en otro puerto, hay que agregarlo.
+
+Ver `infra/GUIA_LOCAL.md` en `root`.
+
+### Variables (`.env`)
+
+| Variable | Para qué | Local |
+|---|---|---|
+| `EXPO_PUBLIC_API_URL` | URL base del gateway | `http://localhost:8080/api/v1`. Sin esta variable, el login y el registro usan datos de prueba (mock) |
+| `EXPO_PUBLIC_GOOGLE_CLIENT_ID` | Client ID web de Google para el login federado | El de `.env.example` |
+| `EXPO_PUBLIC_WAKE_URLS` | Opcional: URLs que se despiertan al abrir la app (ver abajo) | Vacía: no despierta nada |
+
+Las `EXPO_PUBLIC_*` se fijan al compilar: después de cambiarlas hay que reiniciar `npm run web`.
+
+### Otros comandos
+
+- `npm start`: el servidor de Expo, para abrir la app en web, en un emulador o en un teléfono.
+- `npm run android`: la app en un emulador o un teléfono Android. Expo Go no trae el módulo nativo de WebRTC, así que la voz solo anda con una development build (ver [APK de Android](#apk-de-android-voz-nativa)).
+
+## Estructura
+
+- `app/`: pantallas con Expo Router. `(auth)` tiene login, registro y recupero. `(main)` tiene el chat, la voz, el perfil y Mi cuenta.
+- `components/`: componentes compartidos.
+- `lib/api/`: cliente HTTP y llamadas al gateway. `client.ts` agrega el token, renueva la sesión y arma los mensajes de error.
+- `lib/realtime.ts`: el WebSocket de tiempo real, con reconexión.
+- `lib/voiceRoom*.ts`: la voz con LiveKit. `.web.ts` es para el navegador y el otro para Android.
+
+## Deploy
+
+- **Web:** Cloudflare Pages, conectado al repo. `.github/workflows/cloudflare-deploy-respaldo.yml` dispara el deploy hook si Cloudflare no tomó un push.
+- **Android:** cada merge a `main` compila la APK con EAS y la publica como Release de GitHub (`.github/workflows/apk-release.yml`).
 
 ## Servicios dormidos en Render
 
