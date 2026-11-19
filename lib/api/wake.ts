@@ -4,7 +4,7 @@ const API_BASE = process.env.EXPO_PUBLIC_API_URL ?? ""
 const RENDER_DEFAULT_WAKE_URLS = [
   "https://microservicio-autenticacion-z127.onrender.com/livez",
   "https://microservicio-servidores.onrender.com/readyz",
-  "https://microservicio-canales-de-voz.onrender.com/livez",
+  "https://microservicio-canales-de-voz-apg3.onrender.com/livez",
   "https://microservicio-mensajes.onrender.com/livez",
 ]
 const WAKE_TIMEOUT_MS = 120_000
