@@ -34,6 +34,7 @@ Las `EXPO_PUBLIC_*` se fijan al compilar: después de cambiarlas hay que reinici
 ### Otros comandos
 
 - `npm start`: el servidor de Expo, para abrir la app en web, en un emulador o en un teléfono.
+- `npm run typecheck`: chequeo de tipos con TypeScript. Es lo que corre el CI en cada push y en cada PR.
 - `npm run android`: la app en un emulador o un teléfono Android. Expo Go no trae el módulo nativo de WebRTC, así que la voz solo anda con una development build (ver [APK de Android](#apk-de-android-voz-nativa)).
 
 ## Estructura
