@@ -96,7 +96,13 @@ export function friendlyError(err: unknown): string {
   console.warn("[friendlyError]", err)
 
   if (err instanceof ApiError) {
-    if (err.status === 429) return genericForStatus(429)
+    if (err.status === 429) {
+      // El bloqueo de login por cuenta (autenticación) dura minutos y lo explica en
+      // `detail`; el rate limit del gateway llega sin cuerpo y queda el genérico.
+      const detail = typeof err.detail === "string" ? err.detail.trim() : ""
+      const readable = detail !== "" && detail !== "Error desconocido" && !looksTechnical(detail) && !detail.startsWith("<")
+      return readable ? detail : genericForStatus(429)
+    }
     // Business errors (401/403/404/409...) arrive as a human Spanish string in
     // `detail`; 422 validation errors arrive as an array/object, and 5xx are
     // never trustworthy for display -> fall back to a generic message.
