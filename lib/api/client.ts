@@ -32,6 +32,34 @@ export async function setRefreshToken(t: string | null) {
   else await AsyncStorage.removeItem("discordia_refresh_token")
 }
 
+// Sin un límite, un fetch contra un backend colgado queda esperando para siempre y la
+// pantalla se queda cargando. 30 s alcanza para un cold start de Render (el mismo
+// margen que usa wake.ts por intento); las subidas tienen más por el tamaño del archivo.
+const REQUEST_TIMEOUT_MS = 30_000
+const UPLOAD_TIMEOUT_MS = 60_000
+
+export class RequestTimeoutError extends Error {
+  constructor() {
+    super("Request timed out")
+    this.name = "RequestTimeoutError"
+  }
+}
+
+// Si el que llama ya pasa su propio signal, maneja él la cancelación y no se agrega otro.
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+  if (init.signal) return fetch(url, init)
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    return await fetch(url, { ...init, signal: controller.signal })
+  } catch (err) {
+    if (controller.signal.aborted) throw new RequestTimeoutError()
+    throw err
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 export class ApiError extends Error {
   status: number
   detail: unknown
@@ -109,6 +137,8 @@ export function friendlyError(err: unknown): string {
     return withSupportCode(genericForStatus(err.status), err)
   }
 
+  if (err instanceof RequestTimeoutError) return genericForStatus(408)
+
   if (
     err instanceof TypeError ||
     (err instanceof Error &&
@@ -146,11 +176,15 @@ async function renewSession(staleToken: string): Promise<boolean> {
 
   let res: Response
   try {
-    res = await fetch(`${API_BASE}/auth/refresh`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...newTraceHeaders() },
-      body: JSON.stringify({ refresh_token: refreshToken }),
-    })
+    res = await fetchWithTimeout(
+      `${API_BASE}/auth/refresh`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...newTraceHeaders() },
+        body: JSON.stringify({ refresh_token: refreshToken }),
+      },
+      REQUEST_TIMEOUT_MS,
+    )
   } catch {
     return false
   }
@@ -172,13 +206,17 @@ function refreshSession(staleToken: string): Promise<boolean> {
   return refreshing
 }
 
-async function authorizedFetch(path: string, init: RequestInit): Promise<{ res: Response; requestId: string }> {
+async function authorizedFetch(
+  path: string,
+  init: RequestInit,
+  timeoutMs: number = REQUEST_TIMEOUT_MS,
+): Promise<{ res: Response; requestId: string }> {
   // Outside send(): the retry after a refresh is the same request, with the same id.
   const traceHeaders = newTraceHeaders()
   const send = () => {
     const headers: Record<string, string> = { ...(init.headers as Record<string, string>), ...traceHeaders }
     if (token) headers["Authorization"] = `Bearer ${token}`
-    return fetch(`${API_BASE}${path}`, { ...init, headers })
+    return fetchWithTimeout(`${API_BASE}${path}`, { ...init, headers }, timeoutMs)
   }
 
   const sentToken = token
@@ -235,7 +273,7 @@ export async function apiUpload<T>(
   formData: FormData,
   method: string = "POST",
 ): Promise<T> {
-  const { res, requestId } = await authorizedFetch(path, { method, body: formData, headers: {} })
+  const { res, requestId } = await authorizedFetch(path, { method, body: formData, headers: {} }, UPLOAD_TIMEOUT_MS)
 
   if (!res.ok) {
     const text = await res.text().catch(() => "")

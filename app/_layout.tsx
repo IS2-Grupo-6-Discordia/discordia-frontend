@@ -1,9 +1,11 @@
 import { Slot } from "expo-router"
+import type { ErrorBoundaryProps } from "expo-router"
 import { StatusBar } from "expo-status-bar"
 import { useEffect } from "react"
 import { Platform } from "react-native"
 import { wakeBackends } from "@/lib/api/wake"
 import { AuthProvider } from "@/context/AuthContext"
+import AppErrorScreen from "@/components/AppErrorScreen"
 
 // Web-only: browser autofill repaints inputs with a light background and dark
 // text, which breaks the dark theme. Override it once, globally.
@@ -26,6 +28,11 @@ if (
     }
   `
   document.head.appendChild(style)
+}
+
+// Expo Router usa este export para cualquier error de render en las pantallas hijas.
+export function ErrorBoundary(props: ErrorBoundaryProps) {
+  return <AppErrorScreen {...props} />
 }
 
 export default function RootLayout() {
