@@ -25,7 +25,7 @@ const PRESENCE_REFRESH_MS = 15_000
 
 const labelStyle = {
   color: "#8DA8AC",
-  fontSize: 10,
+  fontSize: 11,
   fontWeight: "600" as const,
   textTransform: "uppercase" as const,
   letterSpacing: 1.1,
@@ -204,7 +204,7 @@ export default function PublicProfileScreen() {
                     backgroundColor: "rgba(255,255,255,0.06)",
                   }}
                 >
-                  <Ionicons name="person-outline" size={26} color="#5E7E82" />
+                  <Ionicons name="person-outline" size={26} color="#7F9DA1" />
                 </View>
                 <Text style={{ color: "#E6F3F3", fontSize: 15, fontWeight: "700", textAlign: "center" }}>
                   Perfil no disponible

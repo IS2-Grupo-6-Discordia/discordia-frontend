@@ -43,7 +43,7 @@ function Req({ met, text }: { met: boolean; text: string }) {
           backgroundColor: met ? "#4FD69C" : "rgba(255,255,255,0.13)",
         }}
       >
-        <Text style={{ fontSize: 7, fontWeight: "800", color: met ? "#0A1620" : "#8DA8AC" }}>
+        <Text style={{ fontSize: 11, fontWeight: "800", color: met ? "#0A1620" : "#8DA8AC" }}>
           {met ? "✓" : "–"}
         </Text>
       </View>
@@ -226,7 +226,7 @@ export default function RegisterScreen() {
                 <Text style={{ color: "#8DA8AC", fontWeight: "600", fontSize: 12 }}>← Cambiar email</Text>
               </TouchableOpacity>
               <TouchableOpacity onPress={resend} disabled={resendIn > 0 || loading}>
-                <Text style={{ color: resendIn > 0 ? "#5E7E82" : "#37D6C0", fontWeight: "600", fontSize: 12 }}>
+                <Text style={{ color: resendIn > 0 ? "#7F9DA1" : "#37D6C0", fontWeight: "600", fontSize: 12 }}>
                   {resendIn > 0 ? `Reenviar en ${resendIn}s` : "Reenviar código"}
                 </Text>
               </TouchableOpacity>

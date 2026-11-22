@@ -103,7 +103,7 @@ export default function BannedWordsList({ serverId }: BannedWordsListProps) {
           }}
           onSubmitEditing={add}
           placeholder={full ? "Llegaste al máximo de palabras" : "Nueva palabra"}
-          placeholderTextColor="#5E7E82"
+          placeholderTextColor="#7F9DA1"
           maxLength={BANNED_WORD_MAX + 10}
           editable={!adding && !full}
           autoCapitalize="none"
@@ -133,7 +133,7 @@ export default function BannedWordsList({ serverId }: BannedWordsListProps) {
         </View>
       ) : words.length === 0 ? (
         <View style={{ alignItems: "center", gap: 8, paddingVertical: 26 }}>
-          <Ionicons name="text-outline" size={28} color="#5E7E82" />
+          <Ionicons name="text-outline" size={28} color="#7F9DA1" />
           <Text style={{ color: "#E6F3F3", fontSize: 13.5, fontWeight: "700" }}>No hay palabras prohibidas</Text>
           <Text style={{ color: "#8DA8AC", fontSize: 12, textAlign: "center", lineHeight: 17 }}>
             Las palabras que agregues se bloquean desde el próximo mensaje.
@@ -206,7 +206,7 @@ const CHIP: ViewStyle = {
   borderColor: "rgba(255,255,255,0.10)",
 }
 
-const META: TextStyle = { color: "#5E7E82", fontSize: 11, marginBottom: 8 }
+const META: TextStyle = { color: "#7F9DA1", fontSize: 11, marginBottom: 8 }
 
 const NOTICE_ERROR: ViewStyle = {
   paddingHorizontal: 12,

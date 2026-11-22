@@ -63,9 +63,9 @@ export default function MetricsBarChart({
     <View style={{ gap: 6 }}>
       <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "baseline" }}>
         <Text style={{ color: "#C9DADC", fontSize: 12.5, fontWeight: "700" }}>{title}</Text>
-        <Text style={{ color: "#5E7E82", fontSize: 11 }}>{scaleNote}</Text>
+        <Text style={{ color: "#7F9DA1", fontSize: 11 }}>{scaleNote}</Text>
       </View>
-      <Text numberOfLines={1} style={{ minHeight: 16, fontSize: 11.5, color: activeBar ? "#E6F3F3" : "#5E7E82", fontWeight: activeBar ? "700" : "400" }}>
+      <Text numberOfLines={1} style={{ minHeight: 16, fontSize: 11.5, color: activeBar ? "#E6F3F3" : "#7F9DA1", fontWeight: activeBar ? "700" : "400" }}>
         {activeBar ? `${activeBar.label}: ${activeBar.detail}` : HINT}
       </Text>
       <View
@@ -98,8 +98,8 @@ export default function MetricsBarChart({
         })}
       </View>
       <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
-        <Text style={{ color: "#5E7E82", fontSize: 11 }}>{startLabel}</Text>
-        <Text style={{ color: "#5E7E82", fontSize: 11 }}>{endLabel}</Text>
+        <Text style={{ color: "#7F9DA1", fontSize: 11 }}>{startLabel}</Text>
+        <Text style={{ color: "#7F9DA1", fontSize: 11 }}>{endLabel}</Text>
       </View>
     </View>
   )

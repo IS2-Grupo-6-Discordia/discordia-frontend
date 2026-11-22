@@ -127,12 +127,12 @@ export default function RolePermissionsModal({
               <Ionicons
                 name={checked ? "checkbox" : "square-outline"}
                 size={18}
-                color={checked ? "#37D6C0" : "#5E7E82"}
+                color={checked ? "#37D6C0" : "#7F9DA1"}
               />
               <View style={{ flex: 1 }}>
                 <Text style={{ color: "#E6F3F3", fontSize: 13.5 }}>{perm.label}</Text>
                 {impliedByAdmin ? (
-                  <Text style={{ color: "#5E7E82", fontSize: 11, marginTop: 2 }}>
+                  <Text style={{ color: "#7F9DA1", fontSize: 11, marginTop: 2 }}>
                     Incluido por Administrador
                   </Text>
                 ) : null}

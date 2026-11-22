@@ -45,7 +45,7 @@ export default function RoleMembersModal({
         </View>
       ) : members.length === 0 ? (
         <View style={{ paddingVertical: 24, alignItems: "center" }}>
-          <Text style={{ color: "#5E7E82", fontSize: 13 }}>Ningún miembro tiene este rol.</Text>
+          <Text style={{ color: "#7F9DA1", fontSize: 13 }}>Ningún miembro tiene este rol.</Text>
         </View>
       ) : (
         <ScrollView nestedScrollEnabled style={{ maxHeight: 320 }}>

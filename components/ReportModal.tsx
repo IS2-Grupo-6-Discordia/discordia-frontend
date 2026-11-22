@@ -99,7 +99,7 @@ export default function ReportModal({ target, onClose }: ReportModalProps) {
                     backgroundColor: selected ? "rgba(255,127,114,0.10)" : "rgba(255,255,255,0.04)",
                   }}
                 >
-                  <Ionicons name={selected ? "radio-button-on" : "radio-button-off"} size={16} color={selected ? "#FF7F72" : "#5E7E82"} />
+                  <Ionicons name={selected ? "radio-button-on" : "radio-button-off"} size={16} color={selected ? "#FF7F72" : "#7F9DA1"} />
                   <Text style={{ color: "#E6F3F3", fontSize: 13.5 }}>{r.label}</Text>
                 </Pressable>
               )
@@ -111,7 +111,7 @@ export default function ReportModal({ target, onClose }: ReportModalProps) {
             value={detail}
             onChangeText={setDetail}
             placeholder="Qué pasó, en qué canal, cuándo…"
-            placeholderTextColor="#5E7E82"
+            placeholderTextColor="#7F9DA1"
             multiline
             maxLength={1000}
             editable={!busy}
@@ -135,7 +135,7 @@ export default function ReportModal({ target, onClose }: ReportModalProps) {
 
 const LABEL: TextStyle = {
   color: "#8DA8AC",
-  fontSize: 10,
+  fontSize: 11,
   fontWeight: "600",
   textTransform: "uppercase",
   letterSpacing: 1.1,

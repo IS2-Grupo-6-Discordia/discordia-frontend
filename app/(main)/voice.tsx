@@ -191,7 +191,7 @@ export default function VoiceScreen() {
             {title}
           </Text>
           {subtitle ? (
-            <Text style={{ color: "#8DA8AC", fontSize: 10 }} numberOfLines={1}>
+            <Text style={{ color: "#8DA8AC", fontSize: 11 }} numberOfLines={1}>
               {subtitle}
             </Text>
           ) : null}
@@ -289,7 +289,7 @@ export default function VoiceScreen() {
           >
             <MicIcon muted={!voice.micEnabled} size={22} color="#E6F3F3" />
           </PressableScale>
-          <Text style={{ color: "#C9DADC", fontWeight: "700", fontSize: 10 }}>
+          <Text style={{ color: "#C9DADC", fontWeight: "700", fontSize: 11 }}>
             {!voice.micAllowed ? "Silenciado" : voice.micEnabled ? "Silenciar" : "Activar"}
           </Text>
         </View>
@@ -314,7 +314,7 @@ export default function VoiceScreen() {
           >
             <Ionicons name={voice.camEnabled ? "videocam" : "videocam-off"} size={22} color="#E6F3F3" />
           </PressableScale>
-          <Text style={{ color: "#C9DADC", fontWeight: "700", fontSize: 10 }}>
+          <Text style={{ color: "#C9DADC", fontWeight: "700", fontSize: 11 }}>
             {voice.camEnabled ? "Apagar" : "Activar cámara"}
           </Text>
         </View>
@@ -340,7 +340,7 @@ export default function VoiceScreen() {
             >
               <Ionicons name={voice.screenSharing ? "stop-circle-outline" : "desktop-outline"} size={22} color="#E6F3F3" />
             </PressableScale>
-            <Text style={{ color: "#C9DADC", fontWeight: "700", fontSize: 10, textAlign: "center" }}>
+            <Text style={{ color: "#C9DADC", fontWeight: "700", fontSize: 11, textAlign: "center" }}>
               {voice.screenSharing ? "Dejar de compartir" : "Compartir pantalla"}
             </Text>
           </View>
@@ -366,7 +366,7 @@ export default function VoiceScreen() {
           >
             <Ionicons name="grid-outline" size={21} color="#E6F3F3" />
           </PressableScale>
-          <Text style={{ color: "#C9DADC", fontWeight: "700", fontSize: 10 }}>Diseño</Text>
+          <Text style={{ color: "#C9DADC", fontWeight: "700", fontSize: 11 }}>Diseño</Text>
         </View>
 
         <View style={{ alignItems: "center", gap: 7, width: isNarrow ? 66 : 88 }}>
@@ -386,7 +386,7 @@ export default function VoiceScreen() {
           >
             <Ionicons name="call" size={22} color="#04211D" style={{ transform: [{ rotate: "135deg" }] }} />
           </PressableScale>
-          <Text style={{ color: "#FF7F72", fontWeight: "700", fontSize: 10 }}>{inCall ? "Colgar" : "Desconectar"}</Text>
+          <Text style={{ color: "#FF7F72", fontWeight: "700", fontSize: 11 }}>{inCall ? "Colgar" : "Desconectar"}</Text>
         </View>
       </View>
 

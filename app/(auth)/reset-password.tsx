@@ -39,7 +39,7 @@ function Req({ met, text }: { met: boolean; text: string }) {
           backgroundColor: met ? "#4FD69C" : "rgba(255,255,255,0.13)",
         }}
       >
-        <Text style={{ fontSize: 7, fontWeight: "800", color: met ? "#0A1620" : "#8DA8AC" }}>
+        <Text style={{ fontSize: 11, fontWeight: "800", color: met ? "#0A1620" : "#8DA8AC" }}>
           {met ? "✓" : "–"}
         </Text>
       </View>

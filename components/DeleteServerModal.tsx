@@ -51,7 +51,7 @@ export default function DeleteServerModal({
         value={confirmName}
         onChangeText={setConfirmName}
         placeholder={serverName}
-        placeholderTextColor="#5E7E82"
+        placeholderTextColor="#7F9DA1"
         autoCapitalize="none"
         editable={!busy}
         style={[FIELD, { marginBottom: 18 }]}
@@ -100,7 +100,7 @@ export default function DeleteServerModal({
 
 const LABEL: TextStyle = {
   color: "#8DA8AC",
-  fontSize: 10,
+  fontSize: 11,
   fontWeight: "600",
   textTransform: "uppercase",
   letterSpacing: 1.1,

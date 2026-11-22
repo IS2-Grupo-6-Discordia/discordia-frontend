@@ -16,7 +16,7 @@ module.exports = {
         "border-2": "rgba(255,255,255,0.24)",
         text: "#E6F3F3",
         muted: "#8DA8AC",
-        subtle: "#5E7E82",
+        subtle: "#7F9DA1",
         primary: "#37D6C0",
         "primary-h": "#2BC4AF",
         "primary-d": "rgba(55,214,192,0.17)",
