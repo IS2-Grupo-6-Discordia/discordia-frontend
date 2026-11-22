@@ -33,7 +33,7 @@ export default function AuthField({
       <Text
         style={{
           color: "#8DA8AC",
-          fontSize: 10,
+          fontSize: 11,
           fontWeight: "600",
           textTransform: "uppercase",
           letterSpacing: 1.1,
@@ -44,7 +44,7 @@ export default function AuthField({
       </Text>
       <View style={{ position: "relative", justifyContent: "center" }}>
         <TextInput
-          placeholderTextColor="#5E7E82"
+          placeholderTextColor="#7F9DA1"
           secureTextEntry={isPassword && !revealed}
           onFocus={(e) => {
             setFocused(true)

@@ -118,7 +118,7 @@ export default function VerifyEmail() {
           <PrimaryButton label="Verificar" onPress={confirm} disabled={code.length !== 6} busy={busy} />
           <View style={{ alignItems: "center", marginTop: 14 }}>
             <TouchableOpacity onPress={resend} disabled={resendIn > 0 || busy}>
-              <Text style={{ color: resendIn > 0 ? "#5E7E82" : "#37D6C0", fontWeight: "600", fontSize: 12.5 }}>
+              <Text style={{ color: resendIn > 0 ? "#7F9DA1" : "#37D6C0", fontWeight: "600", fontSize: 12.5 }}>
                 {resendIn > 0 ? `Reenviar en ${resendIn}s` : "Reenviar código"}
               </Text>
             </TouchableOpacity>

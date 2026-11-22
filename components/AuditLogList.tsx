@@ -156,7 +156,7 @@ export default function AuditLogList({ serverId, memberName }: AuditLogListProps
         </View>
       ) : entries.length === 0 && !error ? (
         <View style={{ alignItems: "center", gap: 8, paddingVertical: 26 }}>
-          <Ionicons name="document-text-outline" size={28} color="#5E7E82" />
+          <Ionicons name="document-text-outline" size={28} color="#7F9DA1" />
           <Text style={{ color: "#E6F3F3", fontSize: 13.5, fontWeight: "700" }}>Todavía no hay acciones registradas</Text>
           <Text style={{ color: "#8DA8AC", fontSize: 12, textAlign: "center", lineHeight: 17 }}>
             Acá quedan los baneos, los reportes resueltos y las medidas del staff, con quién las tomó y cuándo.
@@ -195,7 +195,7 @@ export default function AuditLogList({ serverId, memberName }: AuditLogListProps
                       {detail}
                     </Text>
                   ) : null}
-                  <Text style={{ color: "#5E7E82", fontSize: 11, marginTop: 2 }}>{formatDate(e.createdAt)}</Text>
+                  <Text style={{ color: "#7F9DA1", fontSize: 11, marginTop: 2 }}>{formatDate(e.createdAt)}</Text>
                 </View>
               </View>
             )

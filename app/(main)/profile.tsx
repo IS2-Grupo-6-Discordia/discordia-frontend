@@ -47,7 +47,7 @@ function ErrorBox({ text }: { text: string }) {
 
 const labelStyle = {
   color: "#8DA8AC",
-  fontSize: 10,
+  fontSize: 11,
   fontWeight: "600" as const,
   textTransform: "uppercase" as const,
   letterSpacing: 1.1,
@@ -370,7 +370,7 @@ export default function ProfileScreen() {
                       value={name}
                       onChangeText={setName}
                       placeholder="Tu nombre"
-                      placeholderTextColor="#5E7E82"
+                      placeholderTextColor="#7F9DA1"
                       maxLength={NAME_MAX}
                       style={{ ...inputStyle, marginBottom: 14 }}
                     />
@@ -380,12 +380,12 @@ export default function ProfileScreen() {
                       value={customStatus}
                       onChangeText={setCustomStatus}
                       placeholder="¿Qué estás haciendo?"
-                      placeholderTextColor="#5E7E82"
+                      placeholderTextColor="#7F9DA1"
                       maxLength={CUSTOM_STATUS_MAX}
                       accessibilityLabel="Estado personalizado"
                       style={{ ...inputStyle, marginBottom: 4 }}
                     />
-                    <Text style={{ color: "#5E7E82", fontSize: 10, textAlign: "right", marginBottom: 14 }}>
+                    <Text style={{ color: "#7F9DA1", fontSize: 11, textAlign: "right", marginBottom: 14 }}>
                       {customStatus.length}/{CUSTOM_STATUS_MAX}
                     </Text>
 
@@ -394,7 +394,7 @@ export default function ProfileScreen() {
                       value={bio}
                       onChangeText={setBio}
                       placeholder="Contá algo sobre vos"
-                      placeholderTextColor="#5E7E82"
+                      placeholderTextColor="#7F9DA1"
                       maxLength={BIO_MAX}
                       multiline
                       numberOfLines={4}
@@ -405,7 +405,7 @@ export default function ProfileScreen() {
                         textAlignVertical: "top",
                       }}
                     />
-                    <Text style={{ color: "#5E7E82", fontSize: 10, textAlign: "right", marginBottom: 18 }}>
+                    <Text style={{ color: "#7F9DA1", fontSize: 11, textAlign: "right", marginBottom: 18 }}>
                       {bio.length}/{BIO_MAX}
                     </Text>
 

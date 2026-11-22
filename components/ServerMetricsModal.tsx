@@ -83,7 +83,7 @@ function StatTile({ icon, label, value, hint }: { icon: keyof typeof Ionicons.gl
         <Text style={{ flexShrink: 1, color: "#8DA8AC", fontSize: 11.5, fontWeight: "700" }}>{label}</Text>
       </View>
       <Text style={{ color: "#F2FAFA", fontSize: 24, fontWeight: "800", letterSpacing: -0.5 }}>{value.toLocaleString("es-AR")}</Text>
-      {hint ? <Text style={{ color: "#5E7E82", fontSize: 11 }}>{hint}</Text> : null}
+      {hint ? <Text style={{ color: "#7F9DA1", fontSize: 11 }}>{hint}</Text> : null}
     </View>
   )
 }
@@ -118,7 +118,7 @@ function MemberGrowthChart({ growth }: { growth: MemberGrowth }) {
         <Text style={{ color: changeColor, fontSize: 12, fontWeight: "700" }}>
           {change > 0 ? `+${change}` : change < 0 ? `−${-change}` : "sin cambios"}
         </Text>
-        <Text style={{ color: "#5E7E82", fontSize: 11.5 }}>
+        <Text style={{ color: "#7F9DA1", fontSize: 11.5 }}>
           {count(joined, "alta", "altas")} · {count(left, "baja", "bajas")}
         </Text>
       </View>
@@ -214,7 +214,7 @@ export default function ServerMetricsModal({ visible, serverId, serverName, onCl
         <View style={{ gap: 14, opacity: loading ? 0.5 : 1 }}>
           {hasNoActivity(metrics) ? (
             <View style={{ alignItems: "center", gap: 6, paddingVertical: 28, paddingHorizontal: 16, borderRadius: 12, backgroundColor: "rgba(255,255,255,0.03)", borderWidth: 1, borderColor: "rgba(255,255,255,0.08)" }}>
-              <Ionicons name="moon-outline" size={26} color="#5E7E82" />
+              <Ionicons name="moon-outline" size={26} color="#7F9DA1" />
               <Text style={{ color: "#E6F3F3", fontSize: 14, fontWeight: "700" }}>No hubo actividad en este período</Text>
               <Text style={{ color: "#8DA8AC", fontSize: 12, lineHeight: 17, textAlign: "center" }}>
                 En los últimos {periodLabel} nadie envió mensajes, se unió ni se fue del servidor. Hoy tiene{" "}
@@ -239,7 +239,7 @@ export default function ServerMetricsModal({ visible, serverId, serverName, onCl
           )}
           <View style={{ height: 1, backgroundColor: "rgba(255,255,255,0.08)" }} />
           <MemberGrowthChart growth={metrics.growth} />
-          <Text style={{ color: "#5E7E82", fontSize: 11, lineHeight: 15 }}>
+          <Text style={{ color: "#7F9DA1", fontSize: 11, lineHeight: 15 }}>
             Miembros activos: quienes enviaron al menos un mensaje en el período. Los mensajes borrados también cuentan como enviados. La
             evolución de miembros se registra desde que se activó esta función: quienes se fueron antes no aparecen.
           </Text>

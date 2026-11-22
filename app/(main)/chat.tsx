@@ -264,7 +264,7 @@ const MOCK_SERVER_NOTICE =
 // one radius scale (controls at 10), one field treatment, one primary button.
 const LABEL: TextStyle = {
   color: "#8DA8AC",
-  fontSize: 10,
+  fontSize: 11,
   fontWeight: "600",
   textTransform: "uppercase",
   letterSpacing: 1.1,
@@ -1205,7 +1205,7 @@ export default function ChatScreen() {
     }
     return (
       <View style={{ paddingVertical: 10, alignItems: "center" }}>
-        <Text style={{ color: "#5F7B7F", fontSize: 11, fontWeight: "600" }}>Inicio del canal</Text>
+        <Text style={{ color: "#7F9DA1", fontSize: 11, fontWeight: "600" }}>Inicio del canal</Text>
       </View>
     )
   }
@@ -3517,14 +3517,14 @@ export default function ChatScreen() {
                       justifyContent: "center",
                       backgroundColor: "#FF7F72",
                       borderRadius: 9999,
-                      minWidth: 15,
-                      height: 15,
+                      minWidth: 17,
+                      height: 17,
                       paddingHorizontal: 4,
                       borderWidth: 2,
                       borderColor: "rgba(255,255,255,0.15)",
                     }}
                   >
-                    <Text style={{ color: "#FFFFFF", fontSize: 9, fontWeight: "800" }}>
+                    <Text style={{ color: "#FFFFFF", fontSize: 11, fontWeight: "800" }}>
                       {serverUnread(s).mentions >= 99 ? "99+" : serverUnread(s).mentions}
                     </Text>
                   </View>
@@ -3686,7 +3686,7 @@ export default function ChatScreen() {
                     </Text>
                     {opts.badge ? (
                       <View style={{ minWidth: 18, height: 18, paddingHorizontal: 5, borderRadius: 9999, alignItems: "center", justifyContent: "center", backgroundColor: "#FF7F72" }}>
-                        <Text style={{ color: "#04211D", fontSize: 10, fontWeight: "800" }}>{opts.badge > 99 ? "99+" : opts.badge}</Text>
+                        <Text style={{ color: "#04211D", fontSize: 11, fontWeight: "800" }}>{opts.badge > 99 ? "99+" : opts.badge}</Text>
                       </View>
                     ) : null}
                     {opts.checked ? <Ionicons name="checkmark" size={16} color="#37D6C0" /> : null}
@@ -3730,7 +3730,7 @@ export default function ChatScreen() {
                     <Text
                       style={{
                         color: "#8DA8AC",
-                        fontSize: 10.5,
+                        fontSize: 11,
                         fontWeight: "800",
                         letterSpacing: 0.5,
                         paddingHorizontal: 14,
@@ -3829,7 +3829,7 @@ export default function ChatScreen() {
             ) : notifItems.length === 0 ? (
               // CA2: sin actividad relevante reciente.
               <View style={{ padding: 32, alignItems: "center", gap: 8 }}>
-                <Ionicons name="notifications-off-outline" size={30} color="#5E7E82" />
+                <Ionicons name="notifications-off-outline" size={30} color="#7F9DA1" />
                 <Text style={{ color: "#E6F3F3", fontSize: 14, fontWeight: "700" }}>
                   No hay notificaciones para mostrar
                 </Text>
@@ -3869,7 +3869,7 @@ export default function ChatScreen() {
                             <Text style={{ fontWeight: "700" }}>{n.author}</Text>
                             {n.kind === "everyone" ? " mencionó a todos" : " te mencionó"}
                           </Text>
-                          <Text style={{ color: "#8DA8AC", fontSize: 10.5 }}>{timeAgo(n.createdAt)}</Text>
+                          <Text style={{ color: "#8DA8AC", fontSize: 11 }}>{timeAgo(n.createdAt)}</Text>
                           {n.unread ? (
                             <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: "#37D6C0" }} />
                           ) : null}
@@ -3963,12 +3963,12 @@ export default function ChatScreen() {
                 <Ionicons
                   name={serverLevel(prefs, activeServer) === "none" ? "notifications-off-outline" : "at-outline"}
                   size={13}
-                  color="#5E7E82"
+                  color="#7F9DA1"
                 />
               ) : null}
               {canModerate && pendingReports > 0 && !activeSuspended ? (
                 <View style={{ minWidth: 17, height: 17, paddingHorizontal: 4, borderRadius: 9999, alignItems: "center", justifyContent: "center", backgroundColor: "#FF7F72" }}>
-                  <Text style={{ color: "#04211D", fontSize: 10, fontWeight: "800" }}>{pendingReports > 99 ? "99+" : pendingReports}</Text>
+                  <Text style={{ color: "#04211D", fontSize: 11, fontWeight: "800" }}>{pendingReports > 99 ? "99+" : pendingReports}</Text>
                 </View>
               ) : null}
               <View style={{ width: 26, height: 26, borderRadius: 8, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(255,255,255,0.06)" }}>
@@ -4010,7 +4010,7 @@ export default function ChatScreen() {
             return (
             <View key={cat.id}>
               <View style={{ paddingHorizontal: 12, paddingTop: 12, paddingBottom: 4, flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
-                <Text style={{ color: "#8DA8AC", fontWeight: "700", textTransform: "uppercase", fontSize: 9.5, letterSpacing: 1.3 }}>
+                <Text style={{ color: "#8DA8AC", fontWeight: "700", textTransform: "uppercase", fontSize: 11, letterSpacing: 1.3 }}>
                   {cat.name}
                 </Text>
                 {canManageChannels ? (
@@ -4104,7 +4104,7 @@ export default function ChatScreen() {
                           : active || (cu.unread && !cu.muted)
                             ? "#E6F3F3"
                             : cu.muted
-                              ? "#5E7E82"
+                              ? "#7F9DA1"
                               : "#8DA8AC",
                         fontWeight: inCall || active || (cu.unread && !cu.muted) ? "700" : "400",
                       }}
@@ -4116,7 +4116,7 @@ export default function ChatScreen() {
                       <Ionicons
                         name={cu.muted ? "notifications-off-outline" : "at-outline"}
                         size={11}
-                        color="#5E7E82"
+                        color="#7F9DA1"
                       />
                     ) : null}
                     {canManageChannels && active ? (
@@ -4159,7 +4159,7 @@ export default function ChatScreen() {
                       // CA3: una mención sin leer se ve distinta de la actividad común (globito coral con
                       // la cantidad, en vez del punto blanco).
                       <View style={{ backgroundColor: "#FF7F72", borderRadius: 9999, paddingHorizontal: 6, paddingVertical: 1 }}>
-                        <Text style={{ color: "#FFFFFF", fontSize: 9, fontWeight: "800" }}>
+                        <Text style={{ color: "#FFFFFF", fontSize: 11, fontWeight: "800" }}>
                           {cu.mentions >= 99 ? "99+" : cu.mentions}
                         </Text>
                       </View>
@@ -4171,7 +4171,7 @@ export default function ChatScreen() {
                           width: cu.muted ? 6 : 8,
                           height: cu.muted ? 6 : 8,
                           borderRadius: 4,
-                          backgroundColor: cu.muted ? "#5E7E82" : "#E6F3F3",
+                          backgroundColor: cu.muted ? "#7F9DA1" : "#E6F3F3",
                         }}
                       />
                     ) : null}
@@ -4258,7 +4258,7 @@ export default function ChatScreen() {
                 >
                   {voice.status === "connecting" ? "Conectando..." : "Conectado a voz"}
                 </Text>
-                <Text style={{ color: "#8DA8AC", fontSize: 10 }} numberOfLines={1}>
+                <Text style={{ color: "#8DA8AC", fontSize: 11 }} numberOfLines={1}>
                   {voice.channel.name} / {voice.channel.serverName}
                 </Text>
               </View>
@@ -4603,13 +4603,13 @@ export default function ChatScreen() {
                   </Text>
                   {msg.role ? (
                     <View style={{ paddingHorizontal: 6, paddingVertical: 1, borderRadius: 4, backgroundColor: `${msg.roleColor}22` }}>
-                      <Text style={{ fontSize: 9, fontWeight: "800", color: msg.roleColor, textTransform: "uppercase", letterSpacing: 0.5 }}>
+                      <Text style={{ fontSize: 11, fontWeight: "800", color: msg.roleColor, textTransform: "uppercase", letterSpacing: 0.5 }}>
                         {msg.role}
                       </Text>
                     </View>
                   ) : null}
-                  <Text style={{ color: "#8DA8AC", fontSize: 10 }}>{msg.time}</Text>
-                  {msg.edited ? <Text style={{ color: "#8DA8AC", fontSize: 9.5 }}>(editado)</Text> : null}
+                  <Text style={{ color: "#8DA8AC", fontSize: 11 }}>{msg.time}</Text>
+                  {msg.edited ? <Text style={{ color: "#8DA8AC", fontSize: 11 }}>(editado)</Text> : null}
                   {Platform.OS === "web" && !isNarrow && !isEditing && (editable || deletable) ? (
                     <View
                       style={{
@@ -4627,7 +4627,7 @@ export default function ChatScreen() {
                           style={{ flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6 }}
                         >
                           <Ionicons name="create-outline" size={11} color="#8DE9DC" />
-                          <Text style={{ color: "#8DE9DC", fontSize: 10.5, fontWeight: "700" }}>Editar</Text>
+                          <Text style={{ color: "#8DE9DC", fontSize: 11, fontWeight: "700" }}>Editar</Text>
                         </PressableScale>
                       ) : null}
                       {deletable ? (
@@ -4638,7 +4638,7 @@ export default function ChatScreen() {
                           style={{ flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6 }}
                         >
                           <Ionicons name="trash-outline" size={11} color="#FF9E94" />
-                          <Text style={{ color: "#FF9E94", fontSize: 10.5, fontWeight: "700" }}>Eliminar</Text>
+                          <Text style={{ color: "#FF9E94", fontSize: 11, fontWeight: "700" }}>Eliminar</Text>
                         </PressableScale>
                       ) : null}
                     </View>
@@ -4651,7 +4651,7 @@ export default function ChatScreen() {
                       style={{ marginLeft: editable || deletable ? 0 : "auto", flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6, opacity: hoveredMessage === msg.id ? 1 : 0 }}
                     >
                       <Ionicons name="flag-outline" size={11} color="#FF9E94" />
-                      <Text style={{ color: "#FF9E94", fontSize: 10.5, fontWeight: "700" }}>Reportar</Text>
+                      <Text style={{ color: "#FF9E94", fontSize: 11, fontWeight: "700" }}>Reportar</Text>
                     </PressableScale>
                   ) : null}
                 </View>
@@ -4713,7 +4713,7 @@ export default function ChatScreen() {
                         )}
                       </PressableScale>
                       {Platform.OS === "web" ? (
-                        <Text style={{ color: "#8DA8AC", fontSize: 10 }}>Enter para guardar · Esc para cancelar</Text>
+                        <Text style={{ color: "#8DA8AC", fontSize: 11 }}>Enter para guardar · Esc para cancelar</Text>
                       ) : null}
                     </View>
                   </View>
@@ -4743,9 +4743,9 @@ export default function ChatScreen() {
                           backgroundColor: r.mine ? "rgba(55,214,192,0.17)" : "rgba(255,255,255,0.10)",
                         }}
                       >
-                        <Text style={{ fontSize: 10 }}>{r.emoji} </Text>
+                        <Text style={{ fontSize: 11 }}>{r.emoji} </Text>
                         <Text
-                          style={{ fontSize: 10, fontWeight: "700", color: r.mine ? "#37D6C0" : "#8DA8AC" }}
+                          style={{ fontSize: 11, fontWeight: "700", color: r.mine ? "#37D6C0" : "#8DA8AC" }}
                         >
                           {r.count}
                         </Text>
@@ -4766,7 +4766,7 @@ export default function ChatScreen() {
                   style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 10 }}
                 >
                   <View style={{ flex: 1, height: 1, backgroundColor: "rgba(255,107,107,0.55)" }} />
-                  <Text style={{ color: "#FF8A80", fontSize: 10.5, fontWeight: "800", letterSpacing: 0.4 }}>
+                  <Text style={{ color: "#FF8A80", fontSize: 11, fontWeight: "800", letterSpacing: 0.4 }}>
                     {unreadDivider.count} {unreadDivider.count === 1 ? "MENSAJE NO LEÍDO" : "MENSAJES NO LEÍDOS"}
                   </Text>
                   <View style={{ flex: 1, height: 1, backgroundColor: "rgba(255,107,107,0.55)" }} />
@@ -4780,7 +4780,7 @@ export default function ChatScreen() {
         {/* Typing indicator: demo, shown only in the example server's #anuncios */}
         <View style={{ paddingHorizontal: 16, paddingBottom: 4, minHeight: 18 }}>
           {activeChannel === "anuncios" ? (
-            <Text style={{ color: "#8DA8AC", fontSize: 10.5 }}>Mora está escribiendo…</Text>
+            <Text style={{ color: "#8DA8AC", fontSize: 11 }}>Mora está escribiendo…</Text>
           ) : null}
         </View>
 
@@ -4840,7 +4840,7 @@ export default function ChatScreen() {
                   <Text style={{ color: "#E6F3F3", fontSize: 12, flexShrink: 1 }} numberOfLines={1}>
                     {sg.label}
                   </Text>
-                  <Text style={{ color: "#8DA8AC", fontSize: 10.5 }}>
+                  <Text style={{ color: "#8DA8AC", fontSize: 11 }}>
                     {sg.kind === "everyone" ? "Avisa a todo el canal" : sg.kind === "role" ? "Rol" : ""}
                   </Text>
                 </Pressable>
@@ -4870,7 +4870,7 @@ export default function ChatScreen() {
               onKeyPress={handleComposerKeyPress}
               editable={!sendDisabled}
               placeholder={sendDisabled ? sendDisabledMessage : `Escribí en #${channel?.name ?? ""}`}
-              placeholderTextColor="#5E7E82"
+              placeholderTextColor="#7F9DA1"
               style={{ flex: 1, color: "#E6F3F3", fontSize: 12, opacity: sendDisabled ? 0.5 : 1 }}
               onSubmitEditing={() =>
                 mentionSuggestions.length > 0 ? applySuggestion(mentionSuggestions[selectedSuggestion]) : handleSend()
@@ -4903,7 +4903,7 @@ export default function ChatScreen() {
                 gap: 8,
               }}
             >
-              <Text style={{ color: sendDisabled || messageTooLong ? "#FF9B8A" : "#8DA8AC", fontSize: 10.5, flexShrink: 1 }}>
+              <Text style={{ color: sendDisabled || messageTooLong ? "#FF9B8A" : "#8DA8AC", fontSize: 11, flexShrink: 1 }}>
                 {sendDisabled
                   ? sendDisabledMessage
                   : messageTooLong
@@ -4911,7 +4911,7 @@ export default function ChatScreen() {
                     : ""}
               </Text>
               {!sendDisabled && messageLength >= MESSAGE_COUNTER_FROM ? (
-                <Text style={{ color: messageTooLong ? "#FF6B6B" : "#8DA8AC", fontSize: 10.5 }}>
+                <Text style={{ color: messageTooLong ? "#FF6B6B" : "#8DA8AC", fontSize: 11 }}>
                   {messageLength}/{MESSAGE_MAX}
                 </Text>
               ) : null}
@@ -4985,7 +4985,7 @@ export default function ChatScreen() {
 
           {roles.length === 0 ? (
             <View style={{ alignItems: "center", paddingHorizontal: 20, paddingTop: 44, gap: 8 }}>
-              <Ionicons name="people-outline" size={30} color="#5E7E82" />
+              <Ionicons name="people-outline" size={30} color="#7F9DA1" />
               <Text style={{ color: "#E6F3F3", fontSize: 13, fontWeight: "600", textAlign: "center" }}>
                 Todavía no hay miembros
               </Text>
@@ -4999,10 +4999,10 @@ export default function ChatScreen() {
                 <View key={role.name} style={{ marginTop: 14 }}>
                   <View style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 6, marginBottom: 4 }}>
                     <View style={{ width: 7, height: 7, borderRadius: 9999, backgroundColor: role.color }} />
-                    <Text style={{ color: "#8DA8AC", fontWeight: "700", textTransform: "uppercase", fontSize: 9.5, letterSpacing: 1.1 }}>
+                    <Text style={{ color: "#8DA8AC", fontWeight: "700", textTransform: "uppercase", fontSize: 11, letterSpacing: 1.1 }}>
                       {role.name}
                     </Text>
-                    <Text style={{ color: "#5E7E82", fontSize: 9.5, fontWeight: "700", marginLeft: "auto" }}>
+                    <Text style={{ color: "#7F9DA1", fontSize: 11, fontWeight: "700", marginLeft: "auto" }}>
                       {role.members.length}
                     </Text>
                   </View>
@@ -5040,7 +5040,7 @@ export default function ChatScreen() {
                             {m.name}
                           </Text>
                           {/* HU-5 de perfil: el estado personalizado reemplaza la etiqueta de presencia. */}
-                          <Text style={{ color: "#8DA8AC", fontSize: 10 }} numberOfLines={1}>
+                          <Text style={{ color: "#8DA8AC", fontSize: 11 }} numberOfLines={1}>
                             {m.customStatus || STATUS_LABELS[m.status]}
                           </Text>
                         </View>
@@ -5118,12 +5118,12 @@ export default function ChatScreen() {
               value={serverName}
               onChangeText={setServerName}
               placeholder="Ej: FIUBA · IS2"
-              placeholderTextColor="#5E7E82"
+              placeholderTextColor="#7F9DA1"
               style={[FIELD, { marginBottom: 6 }]}
             />
             <Text
               style={{
-                color: serverName.trim().length > SERVER_NAME_MAX ? "#FF9E94" : "#5E7E82",
+                color: serverName.trim().length > SERVER_NAME_MAX ? "#FF9E94" : "#7F9DA1",
                 fontSize: 11,
                 textAlign: "right",
                 marginBottom: 16,
@@ -5156,7 +5156,7 @@ export default function ChatScreen() {
                 <Text style={{ color: "#E6F3F3", fontSize: 12.5, fontWeight: "600" }} numberOfLines={1}>
                   {iconLabel || "Subir una imagen"}
                 </Text>
-                <Text style={{ color: "#5E7E82", fontSize: 10.5 }}>Opcional · PNG o JPG</Text>
+                <Text style={{ color: "#7F9DA1", fontSize: 11 }}>Opcional · PNG o JPG</Text>
               </View>
               {iconLabel ? (
                 <TouchableOpacity
@@ -5198,7 +5198,7 @@ export default function ChatScreen() {
               value={joinInput}
               onChangeText={setJoinInput}
               placeholder="Ej: discordia.app/invite/abc123"
-              placeholderTextColor="#5E7E82"
+              placeholderTextColor="#7F9DA1"
               autoCapitalize="none"
               style={[FIELD, { marginBottom: 18 }]}
             />
@@ -5349,7 +5349,7 @@ export default function ChatScreen() {
                       <Text style={{ color: "#E6F3F3", fontSize: 12.5, fontWeight: "700" }} numberOfLines={1}>
                         {inv.code}
                       </Text>
-                      <Text style={{ color: "#8DA8AC", fontSize: 10.5 }} numberOfLines={1}>
+                      <Text style={{ color: "#8DA8AC", fontSize: 11 }} numberOfLines={1}>
                         {`${formatInviteUses(inv)} · ${formatInviteExpiry(inv.expiresAt)}`}
                       </Text>
                     </View>
@@ -5525,7 +5525,7 @@ export default function ChatScreen() {
           value={editChName}
           onChangeText={setEditChName}
           placeholder="nombre-del-canal"
-          placeholderTextColor="#5E7E82"
+          placeholderTextColor="#7F9DA1"
           maxLength={100}
           autoCapitalize="none"
           style={[FIELD, { marginBottom: 14 }]}
@@ -5536,7 +5536,7 @@ export default function ChatScreen() {
           value={editChTopic}
           onChangeText={setEditChTopic}
           placeholder="¿De qué se habla en este canal?"
-          placeholderTextColor="#5E7E82"
+          placeholderTextColor="#7F9DA1"
           maxLength={256}
           autoCapitalize="none"
           style={[FIELD, { marginBottom: 14 }]}
@@ -5636,7 +5636,7 @@ export default function ChatScreen() {
           value={createChName}
           onChangeText={setCreateChName}
           placeholder="nombre-del-canal"
-          placeholderTextColor="#5E7E82"
+          placeholderTextColor="#7F9DA1"
           maxLength={100}
           autoCapitalize="none"
           style={[FIELD, { marginBottom: 14 }]}
@@ -6062,7 +6062,7 @@ export default function ChatScreen() {
           value={transferConfirmName}
           onChangeText={setTransferConfirmName}
           placeholder={activeServerName}
-          placeholderTextColor="#5E7E82"
+          placeholderTextColor="#7F9DA1"
           autoCapitalize="none"
           style={[FIELD, { marginBottom: 18 }]}
         />
@@ -6128,7 +6128,7 @@ export default function ChatScreen() {
           value={muteReason}
           onChangeText={setMuteReason}
           placeholder="Por ejemplo: spam"
-          placeholderTextColor="#5E7E82"
+          placeholderTextColor="#7F9DA1"
           maxLength={500}
           style={[FIELD, { marginBottom: 18 }]}
         />
@@ -6252,7 +6252,7 @@ export default function ChatScreen() {
           value={banReason}
           onChangeText={setBanReason}
           placeholder="Por ejemplo: spam"
-          placeholderTextColor="#5E7E82"
+          placeholderTextColor="#7F9DA1"
           maxLength={500}
           style={[FIELD, { marginBottom: 18 }]}
         />
@@ -6382,7 +6382,7 @@ export default function ChatScreen() {
           value={catCreateName}
           onChangeText={setCatCreateName}
           placeholder="nombre-de-categoría"
-          placeholderTextColor="#5E7E82"
+          placeholderTextColor="#7F9DA1"
           maxLength={100}
           autoCapitalize="none"
           style={[FIELD, { marginBottom: 18 }]}
@@ -6429,7 +6429,7 @@ export default function ChatScreen() {
           value={catEditName}
           onChangeText={setCatEditName}
           placeholder="nombre-de-categoría"
-          placeholderTextColor="#5E7E82"
+          placeholderTextColor="#7F9DA1"
           maxLength={100}
           autoCapitalize="none"
           style={[FIELD, { marginBottom: 18 }]}

@@ -36,7 +36,7 @@ export default function Tag({ type, children }: TagProps) {
           backgroundColor: c.color,
         }}
       />
-      <Text style={{ color: c.color, fontSize: 10, fontWeight: "700" }}>
+      <Text style={{ color: c.color, fontSize: 11, fontWeight: "700" }}>
         {children}
       </Text>
     </View>
