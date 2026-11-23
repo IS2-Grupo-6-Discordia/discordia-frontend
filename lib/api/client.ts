@@ -166,7 +166,51 @@ const NO_REFRESH_PATHS = new Set([
   "/auth/users",
 ])
 
-let refreshing: Promise<boolean> | null = null
+// Respuestas pasajeras en los endpoints de sesión: un 429 o 502-504 que no viene de
+// autenticación (Render corta un rato las llamadas del gateway a autenticación después de un
+// arranque en frío, y el gateway puede estar despertando). Se reintentan sin mostrar error,
+// con el botón todavía cargando. Un 429 de autenticación (bloqueo por contraseñas
+// incorrectas) trae `detail` y no se reintenta: ese sí se le muestra al usuario.
+const RETRYABLE_PATHS = new Set(["/auth/login", "/auth/login/2fa", "/auth/oauth/google", "/auth/refresh"])
+const TRANSIENT_STATUSES = new Set([429, 502, 503, 504])
+const RETRY_DELAYS_MS = [1_500, 3_000, 5_000, 8_000]
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function isTransient(res: Response): Promise<boolean> {
+  if (!TRANSIENT_STATUSES.has(res.status)) return false
+  const text = await res.clone().text().catch(() => "")
+  try {
+    return typeof JSON.parse(text)?.detail !== "string"
+  } catch {
+    return true
+  }
+}
+
+async function sendWithRetries(send: () => Promise<Response>, retryable: boolean): Promise<Response> {
+  for (let attempt = 0; ; attempt++) {
+    const last = !retryable || attempt >= RETRY_DELAYS_MS.length
+    let res: Response
+    try {
+      res = await send()
+    } catch (err) {
+      // Solo errores de red (TypeError): un timeout de 30 s ya esperó bastante.
+      if (last || !(err instanceof TypeError)) throw err
+      await sleep(RETRY_DELAYS_MS[attempt])
+      continue
+    }
+    if (last || !(await isTransient(res))) return res
+    await sleep(RETRY_DELAYS_MS[attempt])
+  }
+}
+
+// "unavailable": la renovación falló por algo pasajero (red, Render, gateway despertando). La
+// sesión sigue siendo válida, así que no se cierra.
+type RefreshOutcome = "renewed" | "rejected" | "unavailable"
+
+let refreshing: Promise<RefreshOutcome> | null = null
 
 async function adoptStoredSession(staleToken: string): Promise<boolean> {
   const storedToken = await AsyncStorage.getItem("discordia_token")
@@ -176,34 +220,43 @@ async function adoptStoredSession(staleToken: string): Promise<boolean> {
   return true
 }
 
-async function renewSession(staleToken: string): Promise<boolean> {
-  if (await adoptStoredSession(staleToken)) return true
-  if (!refreshToken) return false
+async function renewSession(staleToken: string): Promise<RefreshOutcome> {
+  if (await adoptStoredSession(staleToken)) return "renewed"
+  if (!refreshToken) return "rejected"
+  const sentRefreshToken = refreshToken
 
   let res: Response
   try {
-    res = await fetchWithTimeout(
-      `${API_BASE}/auth/refresh`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...newTraceHeaders() },
-        body: JSON.stringify({ refresh_token: refreshToken }),
-      },
-      REQUEST_TIMEOUT_MS,
+    res = await sendWithRetries(
+      () =>
+        fetchWithTimeout(
+          `${API_BASE}/auth/refresh`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json", ...newTraceHeaders() },
+            body: JSON.stringify({ refresh_token: sentRefreshToken }),
+          },
+          REQUEST_TIMEOUT_MS,
+        ),
+      true,
     )
   } catch {
-    return false
+    return (await adoptStoredSession(staleToken)) ? "renewed" : "unavailable"
   }
 
-  if (!res.ok) return adoptStoredSession(staleToken)
+  if (!res.ok) {
+    if (await adoptStoredSession(staleToken)) return "renewed"
+    // Solo un 400/401 dice que el refresh token ya no sirve; lo demás es pasajero.
+    return res.status === 400 || res.status === 401 ? "rejected" : "unavailable"
+  }
 
   const body = (await res.json()) as { access_token: string; refresh_token: string }
   await setToken(body.access_token)
   await setRefreshToken(body.refresh_token)
-  return true
+  return "renewed"
 }
 
-function refreshSession(staleToken: string): Promise<boolean> {
+function refreshSession(staleToken: string): Promise<RefreshOutcome> {
   if (!refreshing) {
     refreshing = renewSession(staleToken).finally(() => {
       refreshing = null
@@ -219,17 +272,30 @@ async function authorizedFetch(
 ): Promise<{ res: Response; requestId: string }> {
   // Outside send(): the retry after a refresh is the same request, with the same id.
   const traceHeaders = newTraceHeaders()
-  const send = () => {
+  const sendOnce = () => {
     const headers: Record<string, string> = { ...(init.headers as Record<string, string>), ...traceHeaders }
     if (token) headers["Authorization"] = `Bearer ${token}`
     return fetchWithTimeout(`${API_BASE}${path}`, { ...init, headers }, timeoutMs)
   }
+  const send = () => sendWithRetries(sendOnce, RETRYABLE_PATHS.has(path))
 
   const sentToken = token
   let res = await send()
 
-  if (res.status === 401 && sentToken && !NO_REFRESH_PATHS.has(path) && (await refreshSession(sentToken))) {
-    res = await send()
+  if (res.status === 401 && sentToken && !NO_REFRESH_PATHS.has(path)) {
+    const outcome = await refreshSession(sentToken)
+    if (outcome === "renewed") {
+      res = await send()
+    } else if (outcome === "unavailable") {
+      // Se responde como un error pasajero y no como 401, que haría cerrar la sesión.
+      return {
+        res: new Response(JSON.stringify({ detail: "Servicio no disponible" }), {
+          status: 503,
+          headers: { "Content-Type": "application/json" },
+        }),
+        requestId: traceHeaders["X-Request-Id"],
+      }
+    }
   }
 
   if (res.status === 401) {
