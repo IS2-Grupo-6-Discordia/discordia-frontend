@@ -149,9 +149,8 @@ export default function VoiceScreen() {
 
   const connecting = status === "connecting"
   const title = inCall ? `Llamada con ${voice.call?.peerName ?? "..."}` : channel?.name
-  const subtitle = inCall
-    ? null
-    : `${channel?.serverName ?? ""}${connecting ? "" : ` / ${participants.length} ${participants.length === 1 ? "conectado" : "conectados"}`}`
+  // Same header line for a channel and a private call: where it is and how many are connected.
+  const subtitle = `${inCall ? "Llamada privada" : channel?.serverName ?? ""}${connecting ? "" : ` / ${participants.length} ${participants.length === 1 ? "conectado" : "conectados"}`}`
   const hangUp = () => {
     if (inCall) {
       voice.endCurrentCall()
