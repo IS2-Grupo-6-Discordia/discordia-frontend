@@ -1398,12 +1398,14 @@ export default function ChatScreen() {
     for (const group of roles) for (const m of group.members) if (m.avatarUrl) map.set(m.id, m.avatarUrl)
     return map
   }, [roles])
-  // Etiqueta junto al nombre en cada mensaje: "Dueño" o el rol más alto del autor (el grupo en el
-  // que aparece en la lista de miembros). Los miembros sin rol propio no llevan etiqueta.
+  // Etiqueta junto al nombre en cada mensaje: el rol más alto del autor (el grupo en el que aparece
+  // en la lista de miembros). El dueño solo se marca en la lista de miembros, no en los mensajes, y
+  // los miembros sin rol propio no llevan etiqueta.
   const authorBadgeById = useMemo(() => {
     const map = new Map<string, { name: string; color: string }>()
     for (const group of roles) {
-      if (!group.owner && group.name === PLAIN_MEMBERS_GROUP_NAME && group.color === PLAIN_MEMBERS_COLOR) continue
+      if (group.owner) continue
+      if (group.name === PLAIN_MEMBERS_GROUP_NAME && group.color === PLAIN_MEMBERS_COLOR) continue
       for (const m of group.members) map.set(m.id, { name: group.name, color: group.color })
     }
     return map
@@ -4725,7 +4727,6 @@ export default function ChatScreen() {
                   </Text>
                   {authorBadge ? (
                     <View style={{ flexDirection: "row", alignItems: "center", gap: 3, paddingHorizontal: 6, paddingVertical: 1, borderRadius: 4, backgroundColor: `${authorBadge.color}22` }}>
-                      {authorBadge.name === OWNER_GROUP_NAME ? <Ionicons name="star" size={9} color={authorBadge.color} /> : null}
                       <Text style={{ fontSize: 11, fontWeight: "800", color: authorBadge.color, textTransform: "uppercase", letterSpacing: 0.5 }}>
                         {authorBadge.name}
                       </Text>
