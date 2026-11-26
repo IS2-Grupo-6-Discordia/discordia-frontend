@@ -193,12 +193,16 @@ export interface Member {
   color: string
   status: PresenceStatus
   customStatus?: string | null
+  // Other server roles the member holds besides the one their group shows.
+  extraRoles?: string[]
 }
 
 export interface RoleGroup {
   name: string
   color: string
   members: Member[]
+  // The server owner's group: the member panel marks it with a crown.
+  owner?: boolean
 }
 
 export interface Message {

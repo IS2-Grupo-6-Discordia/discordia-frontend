@@ -233,10 +233,32 @@ function formatInviteUses(inv: Invite): string {
   return inv.maxUses == null ? `${inv.uses} usos` : `${inv.uses}/${inv.maxUses} usos`
 }
 
-// Groups real server members (from getServerMembers) into the role sections the
-// member panel renders. The backend only knows "owner" / "member".
-function membersToRoleGroups(members: ServerMember[]): RoleGroup[] {
-  const toMember = (m: ServerMember, color: string): Member => ({
+const OWNER_GROUP_NAME = "Dueño"
+const OWNER_COLOR = "#F0C24B"
+const PLAIN_MEMBERS_GROUP_NAME = "Miembros"
+const PLAIN_MEMBERS_COLOR = "#8DA8AC"
+// Colors for the server's own roles, by hierarchy (the highest role gets the first one).
+const ROLE_GROUP_COLORS = ["#FF7F72", "#B79CFF", "#6BB7FF", "#4FD69C", "#37D6C0"]
+
+// Groups real server members into the sections of the member panel, like Discord: the owner
+// first, then one section per server role in hierarchy order (each member under their highest
+// role) and last everyone with no role besides the default one. `memberRoles` (user id -> roles)
+// arrives after the roster, so until then there is only the owner and the plain members.
+function membersToRoleGroups(
+  members: ServerMember[],
+  memberRoles?: Map<string, ServerRole[]>,
+  defaultRoleId?: string | null,
+): RoleGroup[] {
+  const rolesOf = (userId: string) =>
+    (memberRoles?.get(userId) ?? [])
+      .filter((r) => r.id !== defaultRoleId)
+      .sort((a, b) => a.position - b.position)
+  const ranked = new Map<string, ServerRole>()
+  for (const m of members) for (const r of rolesOf(m.userId)) ranked.set(r.id, r)
+  const roleOrder = [...ranked.values()].sort((a, b) => a.position - b.position)
+  const colorOf = new Map(roleOrder.map((r, i) => [r.id, ROLE_GROUP_COLORS[i % ROLE_GROUP_COLORS.length]]))
+
+  const toMember = (m: ServerMember, color: string, extraRoles: string[]): Member => ({
     id: m.userId,
     name: m.name,
     avatar: m.avatar,
@@ -244,16 +266,36 @@ function membersToRoleGroups(members: ServerMember[]): RoleGroup[] {
     color,
     status: m.status,
     customStatus: m.customStatus,
+    extraRoles,
   })
-  const owners = members.filter((m) => m.role === "owner")
-  const rest = members.filter((m) => m.role !== "owner")
   const groups: RoleGroup[] = []
+  const owners = members.filter((m) => m.role === "owner")
   if (owners.length > 0) {
-    groups.push({ name: "Owner", color: "#37D6C0", members: owners.map((m) => toMember(m, "#37D6C0")) })
+    groups.push({
+      name: OWNER_GROUP_NAME,
+      color: OWNER_COLOR,
+      owner: true,
+      members: owners.map((m) => toMember(m, OWNER_COLOR, [])),
+    })
   }
-  if (rest.length > 0) {
-    groups.push({ name: "Miembros", color: "#8DA8AC", members: rest.map((m) => toMember(m, "#8DA8AC")) })
+  const byRole = new Map<string, Member[]>()
+  const plain: Member[] = []
+  for (const m of members) {
+    if (m.role === "owner") continue
+    const [top, ...others] = rolesOf(m.userId)
+    if (!top) {
+      plain.push(toMember(m, PLAIN_MEMBERS_COLOR, []))
+      continue
+    }
+    const list = byRole.get(top.id) ?? []
+    list.push(toMember(m, colorOf.get(top.id) ?? PLAIN_MEMBERS_COLOR, others.map((r) => r.name)))
+    byRole.set(top.id, list)
   }
+  for (const r of roleOrder) {
+    const list = byRole.get(r.id)
+    if (list?.length) groups.push({ name: r.name, color: colorOf.get(r.id) ?? PLAIN_MEMBERS_COLOR, members: list })
+  }
+  if (plain.length > 0) groups.push({ name: PLAIN_MEMBERS_GROUP_NAME, color: PLAIN_MEMBERS_COLOR, members: plain })
   return groups
 }
 
@@ -419,6 +461,24 @@ export default function ChatScreen() {
   const [tooltip, setTooltip] = useState<{ label: string; sub?: string; y: number } | null>(null)
   const [hoveredMember, setHoveredMember] = useState<string | null>(null)
   const [hoveredMessage, setHoveredMessage] = useState<string | null>(null)
+  // Al salir de un mensaje, las acciones (editar/eliminar/reportar) tardan un poco en esconderse:
+  // así se puede llevar el mouse hasta la barra sin que desaparezca en el camino.
+  const hoverOutTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const hoverMessageIn = (id: string) => {
+    if (hoverOutTimerRef.current) clearTimeout(hoverOutTimerRef.current)
+    hoverOutTimerRef.current = null
+    setHoveredMessage(id)
+  }
+  const hoverMessageOut = (id: string) => {
+    if (hoverOutTimerRef.current) clearTimeout(hoverOutTimerRef.current)
+    hoverOutTimerRef.current = setTimeout(() => {
+      hoverOutTimerRef.current = null
+      setHoveredMessage((h) => (h === id ? null : h))
+    }, 250)
+  }
+  useEffect(() => () => {
+    if (hoverOutTimerRef.current) clearTimeout(hoverOutTimerRef.current)
+  }, [])
 
   const showTooltip = (label: string, sub?: string) => (e: any) => {
     // Touch screens fire mouseenter on tap but never mouseleave: the tooltip
@@ -852,9 +912,27 @@ export default function ChatScreen() {
         }
       })
     // Real roster from the backend (owner + members), hydrated with names/avatars.
-    getServerMembers(activeServer)
+    // First the plain roster (owner / members) so the panel fills right away, then each member's
+    // roles (any member may read them) to split it by role.
+    const rosterServer = activeServer
+    getServerMembers(rosterServer)
       .then((members) => {
-        if (active) setRoles(membersToRoleGroups(members))
+        if (!active) return
+        setRoles(membersToRoleGroups(members))
+        return Promise.all([
+          getDefaultRoleId(rosterServer).catch(() => null),
+          Promise.all(
+            members
+              .filter((m) => m.role !== "owner")
+              .map((m) =>
+                getMemberRoles(rosterServer, m.userId)
+                  .then((r) => [m.userId, r] as const)
+                  .catch(() => [m.userId, [] as ServerRole[]] as const),
+              ),
+          ),
+        ]).then(([defaultRoleId, pairs]) => {
+          if (active) setRoles(membersToRoleGroups(members, new Map(pairs), defaultRoleId))
+        })
       })
       .catch(() => {
         if (active) setRoles([])
@@ -1318,6 +1396,16 @@ export default function ChatScreen() {
   const avatarUrlById = useMemo(() => {
     const map = new Map<string, string>()
     for (const group of roles) for (const m of group.members) if (m.avatarUrl) map.set(m.id, m.avatarUrl)
+    return map
+  }, [roles])
+  // Etiqueta junto al nombre en cada mensaje: "Dueño" o el rol más alto del autor (el grupo en el
+  // que aparece en la lista de miembros). Los miembros sin rol propio no llevan etiqueta.
+  const authorBadgeById = useMemo(() => {
+    const map = new Map<string, { name: string; color: string }>()
+    for (const group of roles) {
+      if (!group.owner && group.name === PLAIN_MEMBERS_GROUP_NAME && group.color === PLAIN_MEMBERS_COLOR) continue
+      for (const m of group.members) map.set(m.id, { name: group.name, color: group.color })
+    }
     return map
   }, [roles])
 
@@ -4571,6 +4659,11 @@ export default function ChatScreen() {
                 ? user?.avatarUrl ?? null
                 : avatarUrlById.get(msg.authorId) ?? null
               : null
+            const authorBadge = msg.role
+              ? { name: msg.role, color: msg.roleColor ?? "#8DA8AC" }
+              : msg.authorId
+                ? authorBadgeById.get(msg.authorId)
+                : undefined
             const reportable = canReportMessage(msg)
             const mentionsMe =
               !!user?.id &&
@@ -4592,11 +4685,12 @@ export default function ChatScreen() {
               }}
               {...(Platform.OS === "web"
                 ? {
-                    onHoverIn: () => setHoveredMessage(msg.id),
-                    onHoverOut: () => setHoveredMessage((h) => (h === msg.id ? null : h)),
+                    onHoverIn: () => hoverMessageIn(msg.id),
+                    onHoverOut: () => hoverMessageOut(msg.id),
                   }
                 : {})}
               style={{
+                position: "relative",
                 flexDirection: "row",
                 gap: 10,
                 borderRadius: 8,
@@ -4629,59 +4723,16 @@ export default function ChatScreen() {
                   >
                     {msg.author}
                   </Text>
-                  {msg.role ? (
-                    <View style={{ paddingHorizontal: 6, paddingVertical: 1, borderRadius: 4, backgroundColor: `${msg.roleColor}22` }}>
-                      <Text style={{ fontSize: 11, fontWeight: "800", color: msg.roleColor, textTransform: "uppercase", letterSpacing: 0.5 }}>
-                        {msg.role}
+                  {authorBadge ? (
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 3, paddingHorizontal: 6, paddingVertical: 1, borderRadius: 4, backgroundColor: `${authorBadge.color}22` }}>
+                      {authorBadge.name === OWNER_GROUP_NAME ? <Ionicons name="star" size={9} color={authorBadge.color} /> : null}
+                      <Text style={{ fontSize: 11, fontWeight: "800", color: authorBadge.color, textTransform: "uppercase", letterSpacing: 0.5 }}>
+                        {authorBadge.name}
                       </Text>
                     </View>
                   ) : null}
                   <Text style={{ color: "#8DA8AC", fontSize: 11 }}>{msg.time}</Text>
                   {msg.edited ? <Text style={{ color: "#8DA8AC", fontSize: 11 }}>(editado)</Text> : null}
-                  {Platform.OS === "web" && !isNarrow && !isEditing && (editable || deletable) ? (
-                    <View
-                      style={{
-                        marginLeft: "auto",
-                        flexDirection: "row",
-                        gap: 4,
-                        opacity: showActions ? 1 : 0,
-                      }}
-                    >
-                      {editable ? (
-                        <PressableScale
-                          onPress={() => startEditMessage(msg)}
-                          accessibilityLabel="Editar mensaje"
-                          hoverStyle={{ backgroundColor: "rgba(55,214,192,0.16)" }}
-                          style={{ flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6 }}
-                        >
-                          <Ionicons name="create-outline" size={11} color="#8DE9DC" />
-                          <Text style={{ color: "#8DE9DC", fontSize: 11, fontWeight: "700" }}>Editar</Text>
-                        </PressableScale>
-                      ) : null}
-                      {deletable ? (
-                        <PressableScale
-                          onPress={() => askDeleteMessage(msg)}
-                          accessibilityLabel="Eliminar mensaje"
-                          hoverStyle={{ backgroundColor: "rgba(255,127,114,0.18)" }}
-                          style={{ flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6 }}
-                        >
-                          <Ionicons name="trash-outline" size={11} color="#FF9E94" />
-                          <Text style={{ color: "#FF9E94", fontSize: 11, fontWeight: "700" }}>Eliminar</Text>
-                        </PressableScale>
-                      ) : null}
-                    </View>
-                  ) : null}
-                  {showReport ? (
-                    <PressableScale
-                      onPress={() => reportMessage(msg)}
-                      accessibilityLabel="Reportar mensaje"
-                      hoverStyle={{ backgroundColor: "rgba(255,127,114,0.18)" }}
-                      style={{ marginLeft: editable || deletable ? 0 : "auto", flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6, opacity: hoveredMessage === msg.id ? 1 : 0 }}
-                    >
-                      <Ionicons name="flag-outline" size={11} color="#FF9E94" />
-                      <Text style={{ color: "#FF9E94", fontSize: 11, fontWeight: "700" }}>Reportar</Text>
-                    </PressableScale>
-                  ) : null}
                 </View>
                 {isEditing ? (
                   <View style={{ marginTop: 4, gap: 6 }}>
@@ -4782,9 +4833,73 @@ export default function ChatScreen() {
                   </View>
                 ) : null}
               </View>
+              {Platform.OS === "web" && !isNarrow && !isEditing && (editable || deletable || showReport) ? (
+                // Barra de acciones flotante arriba a la derecha (estilo Discord): siempre en el mismo
+                // lugar sin importar el largo del renglón, con botones grandes y su propio hover para
+                // que no se esconda mientras el mouse está encima.
+                <View
+                  {...({
+                    onPointerEnter: () => hoverMessageIn(msg.id),
+                    onPointerLeave: () => hoverMessageOut(msg.id),
+                  } as object)}
+                  pointerEvents={showActions ? "auto" : "none"}
+                  style={{
+                    position: "absolute",
+                    top: -16,
+                    right: 8,
+                    zIndex: 10,
+                    flexDirection: "row",
+                    gap: 2,
+                    padding: 3,
+                    borderRadius: 9,
+                    borderWidth: 1,
+                    borderColor: "#1B2630",
+                    backgroundColor: "#0F1D28",
+                    opacity: showActions ? 1 : 0,
+                    shadowColor: "#000",
+                    shadowOpacity: 0.35,
+                    shadowRadius: 10,
+                    shadowOffset: { width: 0, height: 4 },
+                  }}
+                >
+                  {editable ? (
+                    <PressableScale
+                      onPress={() => startEditMessage(msg)}
+                      accessibilityLabel="Editar mensaje"
+                      hoverStyle={{ backgroundColor: "rgba(55,214,192,0.16)" }}
+                      style={{ flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 7 }}
+                    >
+                      <Ionicons name="create-outline" size={14} color="#8DE9DC" />
+                      <Text style={{ color: "#8DE9DC", fontSize: 12, fontWeight: "700" }}>Editar</Text>
+                    </PressableScale>
+                  ) : null}
+                  {deletable ? (
+                    <PressableScale
+                      onPress={() => askDeleteMessage(msg)}
+                      accessibilityLabel="Eliminar mensaje"
+                      hoverStyle={{ backgroundColor: "rgba(255,127,114,0.18)" }}
+                      style={{ flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 7 }}
+                    >
+                      <Ionicons name="trash-outline" size={14} color="#FF9E94" />
+                      <Text style={{ color: "#FF9E94", fontSize: 12, fontWeight: "700" }}>Eliminar</Text>
+                    </PressableScale>
+                  ) : null}
+                  {showReport ? (
+                    <PressableScale
+                      onPress={() => reportMessage(msg)}
+                      accessibilityLabel="Reportar mensaje"
+                      hoverStyle={{ backgroundColor: "rgba(255,127,114,0.18)" }}
+                      style={{ flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 7 }}
+                    >
+                      <Ionicons name="flag-outline" size={14} color="#FF9E94" />
+                      <Text style={{ color: "#FF9E94", fontSize: 12, fontWeight: "700" }}>Reportar</Text>
+                    </PressableScale>
+                  ) : null}
+                </View>
+              ) : null}
             </Pressable>
             )
-            const dayLabel = daySeparatorLabel(msg, index > 0 ? messages[index - 1] : undefined)
+            const dayLabel =daySeparatorLabel(msg, index > 0 ? messages[index - 1] : undefined)
             const daySeparator = dayLabel ? (
               // Título del día: línea gris con la fecha al centro, antes del primer mensaje de cada día.
               <View
@@ -5048,8 +5163,12 @@ export default function ChatScreen() {
               {roles.map((role) => (
                 <View key={role.name} style={{ marginTop: 14 }}>
                   <View style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 6, marginBottom: 4 }}>
-                    <View style={{ width: 7, height: 7, borderRadius: 9999, backgroundColor: role.color }} />
-                    <Text style={{ color: "#8DA8AC", fontWeight: "700", textTransform: "uppercase", fontSize: 11, letterSpacing: 1.1 }}>
+                    {role.owner ? (
+                      <Ionicons name="star" size={10} color={role.color} />
+                    ) : (
+                      <View style={{ width: 7, height: 7, borderRadius: 9999, backgroundColor: role.color }} />
+                    )}
+                    <Text style={{ color: role.owner ? role.color : "#8DA8AC", fontWeight: "700", textTransform: "uppercase", fontSize: 11, letterSpacing: 1.1 }}>
                       {role.name}
                     </Text>
                     <Text style={{ color: "#7F9DA1", fontSize: 11, fontWeight: "700", marginLeft: "auto" }}>
@@ -5086,9 +5205,24 @@ export default function ChatScreen() {
                           <StatusDot status={m.status} />
                         </View>
                         <View style={{ flex: 1, minWidth: 0 }}>
-                          <Text style={{ color: nameColor, fontWeight: "600", fontSize: 12.5 }} numberOfLines={1}>
-                            {m.name}
-                          </Text>
+                          <View style={{ flexDirection: "row", alignItems: "center", gap: 5, minWidth: 0 }}>
+                            <Text style={{ color: nameColor, fontWeight: "600", fontSize: 12.5, flexShrink: 1 }} numberOfLines={1}>
+                              {m.name}
+                            </Text>
+                            {role.owner ? (
+                              <Ionicons name="star" size={11} color={OWNER_COLOR} accessibilityLabel="Dueño del servidor" />
+                            ) : null}
+                            {(m.extraRoles ?? []).map((extra) => (
+                              <View
+                                key={extra}
+                                style={{ paddingHorizontal: 5, paddingVertical: 1, borderRadius: 4, backgroundColor: "rgba(255,255,255,0.06)" }}
+                              >
+                                <Text style={{ color: "#8DA8AC", fontSize: 9.5, fontWeight: "700" }} numberOfLines={1}>
+                                  {extra}
+                                </Text>
+                              </View>
+                            ))}
+                          </View>
                           {/* HU-5 de perfil: el estado personalizado reemplaza la etiqueta de presencia. */}
                           <Text style={{ color: "#8DA8AC", fontSize: 11 }} numberOfLines={1}>
                             {m.customStatus || STATUS_LABELS[m.status]}
