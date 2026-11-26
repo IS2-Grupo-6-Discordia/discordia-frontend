@@ -163,7 +163,7 @@ export default function ServerReportsModal({
         </View>
       ) : reports.length === 0 ? (
         <View style={{ alignItems: "center", gap: 8, paddingVertical: 26 }}>
-          <Ionicons name={tab === "pending" ? "shield-checkmark-outline" : "archive-outline"} size={28} color="#5E7E82" />
+          <Ionicons name={tab === "pending" ? "shield-checkmark-outline" : "archive-outline"} size={28} color="#7F9DA1" />
           <Text style={{ color: "#E6F3F3", fontSize: 13.5, fontWeight: "700" }}>{tab === "pending" ? "No hay reportes pendientes" : "Todavía no resolviste reportes"}</Text>
           <Text style={{ color: "#8DA8AC", fontSize: 12, textAlign: "center", lineHeight: 17 }}>
             {tab === "pending" ? "Cuando un miembro reporte un mensaje o a alguien del servidor, lo vas a ver acá." : "Los reportes que revises o descartes quedan guardados acá."}
@@ -178,10 +178,10 @@ export default function ServerReportsModal({
                 <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                   <View style={CHIP}>
                     <Ionicons name={r.targetType === "message" ? "chatbox-ellipses-outline" : "person-outline"} size={11} color="#FF9E94" />
-                    <Text style={{ color: "#FF9E94", fontSize: 10.5, fontWeight: "800" }}>{r.targetType === "message" ? "Mensaje" : "Usuario"}</Text>
+                    <Text style={{ color: "#FF9E94", fontSize: 11, fontWeight: "800" }}>{r.targetType === "message" ? "Mensaje" : "Usuario"}</Text>
                   </View>
                   <Text style={{ color: "#E6F3F3", fontSize: 12.5, fontWeight: "700" }}>{reasonLabel(r.reason)}</Text>
-                  <Text style={{ color: "#5E7E82", fontSize: 11, marginLeft: "auto" }}>{formatDate(r.createdAt)}</Text>
+                  <Text style={{ color: "#7F9DA1", fontSize: 11, marginLeft: "auto" }}>{formatDate(r.createdAt)}</Text>
                 </View>
 
                 <Text style={META}>
@@ -194,7 +194,7 @@ export default function ServerReportsModal({
                     <Text numberOfLines={6} style={{ color: "#E6F3F3", fontSize: 13, lineHeight: 18 }}>
                       {r.messageContent}
                     </Text>
-                    <Text style={{ color: "#5E7E82", fontSize: 10.5, marginTop: 4 }}>Copia del mensaje al momento del reporte</Text>
+                    <Text style={{ color: "#7F9DA1", fontSize: 11, marginTop: 4 }}>Copia del mensaje al momento del reporte</Text>
                   </View>
                 ) : null}
 

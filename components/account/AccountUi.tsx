@@ -145,7 +145,7 @@ export function AccountRow({
             {value}
           </Text>
           {hint ? (
-            <Text style={{ color: "#5E7E82", fontSize: 11.5, marginTop: 2 }} numberOfLines={2}>
+            <Text style={{ color: "#7F9DA1", fontSize: 11.5, marginTop: 2 }} numberOfLines={2}>
               {hint}
             </Text>
           ) : null}
@@ -176,7 +176,7 @@ export function UnverifiedBadge({ onVerify }: { onVerify?: () => void }) {
         }}
       >
         <Ionicons name="alert-circle" size={12} color="#F0C24B" />
-        <Text style={{ color: "#F0C24B", fontSize: 10.5, fontWeight: "800" }}>No verificado</Text>
+        <Text style={{ color: "#F0C24B", fontSize: 11, fontWeight: "800" }}>No verificado</Text>
       </View>
       {onVerify ? (
         <TouchableOpacity onPress={onVerify} accessibilityRole="button" accessibilityLabel="Verificar email" hitSlop={8}>
@@ -306,7 +306,7 @@ export function passwordChecks(value: string) {
 function Req({ met, text }: { met: boolean; text: string }) {
   return (
     <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-      <Ionicons name={met ? "checkmark-circle" : "ellipse-outline"} size={12} color={met ? "#4FD69C" : "#5E7E82"} />
+      <Ionicons name={met ? "checkmark-circle" : "ellipse-outline"} size={12} color={met ? "#4FD69C" : "#7F9DA1"} />
       <Text style={{ fontSize: 11, color: met ? "#4FD69C" : "#8DA8AC" }}>{text}</Text>
     </View>
   )

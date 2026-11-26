@@ -87,7 +87,7 @@ export default function MemberRolesModal({
         </View>
       ) : roles.length === 0 ? (
         <View style={{ paddingVertical: 24, alignItems: "center" }}>
-          <Text style={{ color: "#5E7E82", fontSize: 13 }}>Este servidor no tiene roles.</Text>
+          <Text style={{ color: "#7F9DA1", fontSize: 13 }}>Este servidor no tiene roles.</Text>
         </View>
       ) : (
         <ScrollView nestedScrollEnabled style={{ maxHeight: 320 }}>
@@ -110,7 +110,7 @@ export default function MemberRolesModal({
                   <Ionicons
                     name={checked ? "checkbox" : "square-outline"}
                     size={18}
-                    color={checked ? "#37D6C0" : "#5E7E82"}
+                    color={checked ? "#37D6C0" : "#7F9DA1"}
                   />
                 )}
                 <Text style={{ color: "#E6F3F3", fontSize: 13.5, fontWeight: "600" }} numberOfLines={1}>

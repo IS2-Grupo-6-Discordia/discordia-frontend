@@ -169,7 +169,7 @@ export default function ChannelPermissionsModal({
 
       {!canAdministrate ? (
         <View style={{ paddingVertical: 24, alignItems: "center" }}>
-          <Text style={{ color: "#5E7E82", fontSize: 13 }}>
+          <Text style={{ color: "#7F9DA1", fontSize: 13 }}>
             No tenés permisos para configurar este canal.
           </Text>
         </View>
@@ -179,7 +179,7 @@ export default function ChannelPermissionsModal({
         </View>
       ) : roles.length === 0 ? (
         <View style={{ paddingVertical: 24, alignItems: "center" }}>
-          <Text style={{ color: "#5E7E82", fontSize: 13 }}>Este servidor no tiene roles.</Text>
+          <Text style={{ color: "#7F9DA1", fontSize: 13 }}>Este servidor no tiene roles.</Text>
         </View>
       ) : (
         <ScrollView nestedScrollEnabled style={{ maxHeight: 360 }}>
@@ -201,7 +201,7 @@ export default function ChannelPermissionsModal({
                     <Ionicons
                       name={editing ? "chevron-down" : "chevron-forward"}
                       size={14}
-                      color="#5E7E82"
+                      color="#7F9DA1"
                     />
                     <View style={{ flex: 1 }}>
                       <Text

@@ -96,7 +96,7 @@ export default function VoiceScreen() {
         {voice.callStatus === "connecting" ? <ActivityIndicator color="#37D6C0" style={{ marginTop: 20 }} /> : null}
         {voice.callStatus === "ringing" && !isOutgoing ? null : (
           <PressableScale
-            onPress={() => (voice.callStatus === "ringing" ? voice.rejectIncomingCall() : voice.endCurrentCall())}
+            onPress={() => voice.hangUpCall()}
             hoverStyle={{ backgroundColor: "#FF6B5C" }}
             style={{ marginTop: 24, borderRadius: 10, paddingVertical: 11, paddingHorizontal: 20, backgroundColor: "#FF7F72" }}
           >
@@ -107,130 +107,12 @@ export default function VoiceScreen() {
     )
   }
 
-  // HU-50: active private call.
-  if (voice.call && voice.callStatus === "connected") {
-    const peerName = voice.call.peerName ?? "Llamada"
-    return (
-      <View style={{ flex: 1, backgroundColor: "#0A1620" }}>
-        {/* Header */}
-        <View
-          style={{
-            flexDirection: "row",
-            alignItems: "center",
-            gap: 10,
-            paddingHorizontal: isNarrow ? 14 : 20,
-            height: 52,
-            borderBottomWidth: 1,
-            borderBottomColor: "rgba(255,255,255,0.10)",
-            backgroundColor: "rgba(255,255,255,0.03)",
-          }}
-        >
-          <PressableScale
-            onPress={() => router.push("/(main)/chat")}
-            accessibilityLabel="Volver al chat"
-            pressedScale={0.9}
-            hoverStyle={{ backgroundColor: "rgba(255,255,255,0.10)" }}
-            style={{ width: 34, height: 34, borderRadius: 9999, alignItems: "center", justifyContent: "center", marginLeft: -6 }}
-          >
-            <Ionicons name="chevron-back" size={20} color="#E6F3F3" />
-          </PressableScale>
-          <Ionicons name="call" size={17} color="#4FD69C" />
-          <View style={{ flex: 1 }}>
-            <Text style={{ color: "#E6F3F3", fontWeight: "700", fontSize: 13.5 }} numberOfLines={1}>
-              Llamada con {peerName}
-            </Text>
-          </View>
-          <View
-            style={{
-              flexDirection: "row",
-              alignItems: "center",
-              gap: 6,
-              paddingHorizontal: 10,
-              paddingVertical: 4,
-              borderRadius: 9999,
-              backgroundColor: "rgba(79,214,156,0.14)",
-            }}
-          >
-            <View style={{ width: 7, height: 7, borderRadius: 9999, backgroundColor: "#4FD69C" }} />
-            <Text style={{ color: "#4FD69C", fontWeight: "700", fontSize: 11 }}>Conectado</Text>
-          </View>
-        </View>
+  // HU-50: an answered private call is just another LiveKit room, so it reuses
+  // the channel view (stage, mic/camera/screen/layout controls); only the
+  // header and the hang-up action change.
+  const inCall = !!voice.call && voice.callStatus === "connected"
 
-        <VoiceStage
-          participants={participants}
-          layout={layout}
-          pinnedId={pinnedId}
-          onTogglePin={(id) => setPinnedId((current) => (current === id ? null : id))}
-          onToggleLocalMute={voice.toggleLocalMute}
-        />
-
-        {micError ? (
-          <Text style={{ color: "#FF9E94", fontSize: 12, textAlign: "center", paddingHorizontal: 20, paddingBottom: 8 }}>
-            {micError}
-          </Text>
-        ) : null}
-
-        {/* Control bar */}
-        <View
-          style={{
-            flexDirection: "row",
-            justifyContent: "center",
-            paddingHorizontal: 20,
-            paddingVertical: 16,
-            borderTopWidth: 1,
-            borderTopColor: "rgba(255,255,255,0.10)",
-            backgroundColor: "rgba(255,255,255,0.03)",
-          }}
-        >
-          <View style={{ alignItems: "center", gap: 7, width: isNarrow ? 66 : 88 }}>
-            <PressableScale
-              onPress={handleToggleMic}
-              accessibilityLabel={voice.micEnabled ? "Silenciar micrófono" : "Activar micrófono"}
-              pressedScale={0.9}
-              hoverStyle={{ backgroundColor: "rgba(255,255,255,0.16)" }}
-              style={{
-                width: 52,
-                height: 52,
-                borderRadius: 9999,
-                alignItems: "center",
-                justifyContent: "center",
-                backgroundColor: "rgba(255,255,255,0.10)",
-                borderWidth: 1,
-                borderColor: "rgba(255,255,255,0.14)",
-              }}
-            >
-              <MicIcon muted={!voice.micEnabled} size={22} color="#E6F3F3" />
-            </PressableScale>
-            <Text style={{ color: "#C9DADC", fontWeight: "700", fontSize: 10 }}>
-              {voice.micEnabled ? "Silenciar" : "Activar"}
-            </Text>
-          </View>
-
-          <View style={{ alignItems: "center", gap: 7, width: isNarrow ? 66 : 88 }}>
-            <PressableScale
-              onPress={() => voice.endCurrentCall()}
-              accessibilityLabel="Colgar llamada"
-              pressedScale={0.9}
-              hoverStyle={{ backgroundColor: "#FF6B5C" }}
-              style={{
-                width: 52,
-                height: 52,
-                borderRadius: 9999,
-                alignItems: "center",
-                justifyContent: "center",
-                backgroundColor: "#FF7F72",
-              }}
-            >
-              <Ionicons name="call" size={22} color="#04211D" style={{ transform: [{ rotate: "135deg" }] }} />
-            </PressableScale>
-            <Text style={{ color: "#FF7F72", fontWeight: "700", fontSize: 10 }}>Colgar</Text>
-          </View>
-        </View>
-      </View>
-    )
-  }
-
-  if (status === "idle" || !channel) {
+  if (!inCall && (status === "idle" || !channel)) {
     return (
       <View style={{ flex: 1, backgroundColor: "#0A1620", alignItems: "center", justifyContent: "center", padding: 24 }}>
         <View
@@ -266,6 +148,17 @@ export default function VoiceScreen() {
   }
 
   const connecting = status === "connecting"
+  const title = inCall ? `Llamada con ${voice.call?.peerName ?? "..."}` : channel?.name
+  // Same header line for a channel and a private call: where it is and how many are connected.
+  const subtitle = `${inCall ? "Llamada privada" : channel?.serverName ?? ""}${connecting ? "" : ` / ${participants.length} ${participants.length === 1 ? "conectado" : "conectados"}`}`
+  const hangUp = () => {
+    if (inCall) {
+      voice.endCurrentCall()
+      return
+    }
+    voice.leave()
+    router.push("/(main)/chat")
+  }
 
   return (
     <View style={{ flex: 1, backgroundColor: "#0A1620" }}>
@@ -291,15 +184,16 @@ export default function VoiceScreen() {
         >
           <Ionicons name="chevron-back" size={20} color="#E6F3F3" />
         </PressableScale>
-        <Ionicons name="volume-high" size={17} color={connecting ? "#F0C24B" : "#4FD69C"} />
+        <Ionicons name={inCall ? "call" : "volume-high"} size={17} color={connecting ? "#F0C24B" : "#4FD69C"} />
         <View style={{ flex: 1 }}>
           <Text style={{ color: "#E6F3F3", fontWeight: "700", fontSize: 13.5 }} numberOfLines={1}>
-            {channel.name}
+            {title}
           </Text>
-          <Text style={{ color: "#8DA8AC", fontSize: 10 }} numberOfLines={1}>
-            {channel.serverName}
-            {connecting ? "" : ` / ${participants.length} ${participants.length === 1 ? "conectado" : "conectados"}`}
-          </Text>
+          {subtitle ? (
+            <Text style={{ color: "#8DA8AC", fontSize: 11 }} numberOfLines={1}>
+              {subtitle}
+            </Text>
+          ) : null}
         </View>
         <View
           style={{
@@ -394,7 +288,7 @@ export default function VoiceScreen() {
           >
             <MicIcon muted={!voice.micEnabled} size={22} color="#E6F3F3" />
           </PressableScale>
-          <Text style={{ color: "#C9DADC", fontWeight: "700", fontSize: 10 }}>
+          <Text style={{ color: "#C9DADC", fontWeight: "700", fontSize: 11 }}>
             {!voice.micAllowed ? "Silenciado" : voice.micEnabled ? "Silenciar" : "Activar"}
           </Text>
         </View>
@@ -419,7 +313,7 @@ export default function VoiceScreen() {
           >
             <Ionicons name={voice.camEnabled ? "videocam" : "videocam-off"} size={22} color="#E6F3F3" />
           </PressableScale>
-          <Text style={{ color: "#C9DADC", fontWeight: "700", fontSize: 10 }}>
+          <Text style={{ color: "#C9DADC", fontWeight: "700", fontSize: 11 }}>
             {voice.camEnabled ? "Apagar" : "Activar cámara"}
           </Text>
         </View>
@@ -445,7 +339,7 @@ export default function VoiceScreen() {
             >
               <Ionicons name={voice.screenSharing ? "stop-circle-outline" : "desktop-outline"} size={22} color="#E6F3F3" />
             </PressableScale>
-            <Text style={{ color: "#C9DADC", fontWeight: "700", fontSize: 10, textAlign: "center" }}>
+            <Text style={{ color: "#C9DADC", fontWeight: "700", fontSize: 11, textAlign: "center" }}>
               {voice.screenSharing ? "Dejar de compartir" : "Compartir pantalla"}
             </Text>
           </View>
@@ -471,16 +365,13 @@ export default function VoiceScreen() {
           >
             <Ionicons name="grid-outline" size={21} color="#E6F3F3" />
           </PressableScale>
-          <Text style={{ color: "#C9DADC", fontWeight: "700", fontSize: 10 }}>Diseño</Text>
+          <Text style={{ color: "#C9DADC", fontWeight: "700", fontSize: 11 }}>Diseño</Text>
         </View>
 
         <View style={{ alignItems: "center", gap: 7, width: isNarrow ? 66 : 88 }}>
           <PressableScale
-            onPress={() => {
-              voice.leave()
-              router.push("/(main)/chat")
-            }}
-            accessibilityLabel="Desconectarse del canal de voz"
+            onPress={hangUp}
+            accessibilityLabel={inCall ? "Colgar llamada" : "Desconectarse del canal de voz"}
             pressedScale={0.9}
             hoverStyle={{ backgroundColor: "#FF6B5C" }}
             style={{
@@ -494,7 +385,7 @@ export default function VoiceScreen() {
           >
             <Ionicons name="call" size={22} color="#04211D" style={{ transform: [{ rotate: "135deg" }] }} />
           </PressableScale>
-          <Text style={{ color: "#FF7F72", fontWeight: "700", fontSize: 10 }}>Desconectar</Text>
+          <Text style={{ color: "#FF7F72", fontWeight: "700", fontSize: 11 }}>{inCall ? "Colgar" : "Desconectar"}</Text>
         </View>
       </View>
 

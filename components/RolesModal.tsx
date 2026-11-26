@@ -239,7 +239,7 @@ export default function RolesModal({
             value={newRoleName}
             onChangeText={setNewRoleName}
             placeholder="Nombre del rol"
-            placeholderTextColor="#5E7E82"
+            placeholderTextColor="#7F9DA1"
             editable={!createBusy}
             onSubmitEditing={handleSubmit}
             returnKeyType="done"
@@ -380,7 +380,7 @@ export default function RolesModal({
         </View>
       ) : roles.length === 0 ? (
         <View style={{ paddingVertical: 24, alignItems: "center" }}>
-          <Text style={{ color: "#5E7E82", fontSize: 13 }}>Este servidor no tiene roles.</Text>
+          <Text style={{ color: "#7F9DA1", fontSize: 13 }}>Este servidor no tiene roles.</Text>
         </View>
       ) : (
         <ScrollView nestedScrollEnabled style={{ maxHeight: 320 }}>
@@ -399,7 +399,7 @@ export default function RolesModal({
                     hoverStyle={{ backgroundColor: "rgba(255,255,255,0.04)" }}
                     style={{ flex: 1, flexDirection: "row", alignItems: "center", gap: 8 }}
                   >
-                    <Ionicons name="chevron-forward" size={14} color="#5E7E82" />
+                    <Ionicons name="chevron-forward" size={14} color="#7F9DA1" />
                     <View style={{ flex: 1 }}>
                       <Text style={{ color: "#E6F3F3", fontSize: 14, fontWeight: "600" }} numberOfLines={1}>
                         {role.name}
@@ -658,7 +658,7 @@ function MenuItem({ icon, label, color = "#E6F3F3", disabled = false, note, onPr
       <View style={{ flex: 1 }}>
         <Text style={{ color, fontSize: 13.5, fontWeight: "600" }}>{label}</Text>
         {note ? (
-          <Text style={{ color: "#5E7E82", fontSize: 11, marginTop: 2 }}>{note}</Text>
+          <Text style={{ color: "#7F9DA1", fontSize: 11, marginTop: 2 }}>{note}</Text>
         ) : null}
       </View>
     </PressableScale>

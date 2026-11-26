@@ -161,13 +161,13 @@ export default function ServerSettingsModal({
         value={name}
         onChangeText={setName}
         placeholder="Nombre del servidor"
-        placeholderTextColor="#5E7E82"
+        placeholderTextColor="#7F9DA1"
         editable={!busy}
         style={[FIELD, { marginBottom: 6 }]}
       />
       <Text
         style={{
-          color: nameTooLong || nameEmptyChange ? "#FF9E94" : "#5E7E82",
+          color: nameTooLong || nameEmptyChange ? "#FF9E94" : "#7F9DA1",
           fontSize: 11,
           textAlign: "right",
           marginBottom: 16,
@@ -187,7 +187,7 @@ export default function ServerSettingsModal({
           {shownIcon ? (
             <Image source={{ uri: shownIcon }} style={{ width: "100%", height: "100%" }} resizeMode="cover" />
           ) : (
-            <Text style={{ color: "#5E7E82", fontSize: 10 }}>Sin ícono</Text>
+            <Text style={{ color: "#7F9DA1", fontSize: 11 }}>Sin ícono</Text>
           )}
         </View>
         <PressableScale
@@ -208,7 +208,7 @@ export default function ServerSettingsModal({
         {shownBanner ? (
           <Image source={{ uri: shownBanner }} style={{ width: "100%", height: "100%" }} resizeMode="cover" />
         ) : (
-          <Text style={{ color: "#5E7E82", fontSize: 12 }}>Sin banner</Text>
+          <Text style={{ color: "#7F9DA1", fontSize: 12 }}>Sin banner</Text>
         )}
       </View>
       <PressableScale
@@ -267,7 +267,7 @@ export default function ServerSettingsModal({
 // modals, kept here so this component stays self-contained.
 const LABEL: TextStyle = {
   color: "#8DA8AC",
-  fontSize: 10,
+  fontSize: 11,
   fontWeight: "600",
   textTransform: "uppercase",
   letterSpacing: 1.1,

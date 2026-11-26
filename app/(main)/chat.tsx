@@ -233,10 +233,32 @@ function formatInviteUses(inv: Invite): string {
   return inv.maxUses == null ? `${inv.uses} usos` : `${inv.uses}/${inv.maxUses} usos`
 }
 
-// Groups real server members (from getServerMembers) into the role sections the
-// member panel renders. The backend only knows "owner" / "member".
-function membersToRoleGroups(members: ServerMember[]): RoleGroup[] {
-  const toMember = (m: ServerMember, color: string): Member => ({
+const OWNER_GROUP_NAME = "Dueño"
+const OWNER_COLOR = "#F0C24B"
+const PLAIN_MEMBERS_GROUP_NAME = "Miembros"
+const PLAIN_MEMBERS_COLOR = "#8DA8AC"
+// Colors for the server's own roles, by hierarchy (the highest role gets the first one).
+const ROLE_GROUP_COLORS = ["#FF7F72", "#B79CFF", "#6BB7FF", "#4FD69C", "#37D6C0"]
+
+// Groups real server members into the sections of the member panel, like Discord: the owner
+// first, then one section per server role in hierarchy order (each member under their highest
+// role) and last everyone with no role besides the default one. `memberRoles` (user id -> roles)
+// arrives after the roster, so until then there is only the owner and the plain members.
+function membersToRoleGroups(
+  members: ServerMember[],
+  memberRoles?: Map<string, ServerRole[]>,
+  defaultRoleId?: string | null,
+): RoleGroup[] {
+  const rolesOf = (userId: string) =>
+    (memberRoles?.get(userId) ?? [])
+      .filter((r) => r.id !== defaultRoleId)
+      .sort((a, b) => a.position - b.position)
+  const ranked = new Map<string, ServerRole>()
+  for (const m of members) for (const r of rolesOf(m.userId)) ranked.set(r.id, r)
+  const roleOrder = [...ranked.values()].sort((a, b) => a.position - b.position)
+  const colorOf = new Map(roleOrder.map((r, i) => [r.id, ROLE_GROUP_COLORS[i % ROLE_GROUP_COLORS.length]]))
+
+  const toMember = (m: ServerMember, color: string, extraRoles: string[]): Member => ({
     id: m.userId,
     name: m.name,
     avatar: m.avatar,
@@ -244,16 +266,36 @@ function membersToRoleGroups(members: ServerMember[]): RoleGroup[] {
     color,
     status: m.status,
     customStatus: m.customStatus,
+    extraRoles,
   })
-  const owners = members.filter((m) => m.role === "owner")
-  const rest = members.filter((m) => m.role !== "owner")
   const groups: RoleGroup[] = []
+  const owners = members.filter((m) => m.role === "owner")
   if (owners.length > 0) {
-    groups.push({ name: "Owner", color: "#37D6C0", members: owners.map((m) => toMember(m, "#37D6C0")) })
+    groups.push({
+      name: OWNER_GROUP_NAME,
+      color: OWNER_COLOR,
+      owner: true,
+      members: owners.map((m) => toMember(m, OWNER_COLOR, [])),
+    })
   }
-  if (rest.length > 0) {
-    groups.push({ name: "Miembros", color: "#8DA8AC", members: rest.map((m) => toMember(m, "#8DA8AC")) })
+  const byRole = new Map<string, Member[]>()
+  const plain: Member[] = []
+  for (const m of members) {
+    if (m.role === "owner") continue
+    const [top, ...others] = rolesOf(m.userId)
+    if (!top) {
+      plain.push(toMember(m, PLAIN_MEMBERS_COLOR, []))
+      continue
+    }
+    const list = byRole.get(top.id) ?? []
+    list.push(toMember(m, colorOf.get(top.id) ?? PLAIN_MEMBERS_COLOR, others.map((r) => r.name)))
+    byRole.set(top.id, list)
   }
+  for (const r of roleOrder) {
+    const list = byRole.get(r.id)
+    if (list?.length) groups.push({ name: r.name, color: colorOf.get(r.id) ?? PLAIN_MEMBERS_COLOR, members: list })
+  }
+  if (plain.length > 0) groups.push({ name: PLAIN_MEMBERS_GROUP_NAME, color: PLAIN_MEMBERS_COLOR, members: plain })
   return groups
 }
 
@@ -264,7 +306,7 @@ const MOCK_SERVER_NOTICE =
 // one radius scale (controls at 10), one field treatment, one primary button.
 const LABEL: TextStyle = {
   color: "#8DA8AC",
-  fontSize: 10,
+  fontSize: 11,
   fontWeight: "600",
   textTransform: "uppercase",
   letterSpacing: 1.1,
@@ -364,6 +406,34 @@ function useKeyboardOverlap(ref: React.RefObject<View | null>) {
   return overlap
 }
 
+const WEEKDAYS = ["domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"]
+const MONTHS = [
+  "enero", "febrero", "marzo", "abril", "mayo", "junio",
+  "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
+]
+
+// Separador por día de la lista de mensajes: devuelve el título del día ("Hoy", "Ayer" o
+// "lunes 24 de noviembre", con el año si no es el actual) cuando `msg` es el primero de su día
+// local, o null si sigue el mismo día que `prev`. Los mensajes sin `createdAt` no cortan el día.
+// Se arma a mano en vez de con toLocaleDateString para no depender del Intl de Hermes.
+function daySeparatorLabel(msg: Message, prev: Message | undefined): string | null {
+  if (!msg.createdAt) return null
+  const day = new Date(msg.createdAt)
+  if (Number.isNaN(day.getTime())) return null
+  const sameDay = (a: Date, b: Date) =>
+    a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate()
+  if (prev?.createdAt) {
+    const prevDay = new Date(prev.createdAt)
+    if (!Number.isNaN(prevDay.getTime()) && sameDay(day, prevDay)) return null
+  }
+  const today = new Date()
+  const yesterday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1)
+  if (sameDay(day, today)) return "Hoy"
+  if (sameDay(day, yesterday)) return "Ayer"
+  const year = day.getFullYear() !== today.getFullYear() ? ` de ${day.getFullYear()}` : ""
+  return `${WEEKDAYS[day.getDay()]} ${day.getDate()} de ${MONTHS[day.getMonth()]}${year}`
+}
+
 export default function ChatScreen() {
   const rootRef = useRef<View>(null)
   const keyboardOverlap = useKeyboardOverlap(rootRef)
@@ -391,6 +461,24 @@ export default function ChatScreen() {
   const [tooltip, setTooltip] = useState<{ label: string; sub?: string; y: number } | null>(null)
   const [hoveredMember, setHoveredMember] = useState<string | null>(null)
   const [hoveredMessage, setHoveredMessage] = useState<string | null>(null)
+  // Al salir de un mensaje, las acciones (editar/eliminar/reportar) tardan un poco en esconderse:
+  // así se puede llevar el mouse hasta la barra sin que desaparezca en el camino.
+  const hoverOutTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const hoverMessageIn = (id: string) => {
+    if (hoverOutTimerRef.current) clearTimeout(hoverOutTimerRef.current)
+    hoverOutTimerRef.current = null
+    setHoveredMessage(id)
+  }
+  const hoverMessageOut = (id: string) => {
+    if (hoverOutTimerRef.current) clearTimeout(hoverOutTimerRef.current)
+    hoverOutTimerRef.current = setTimeout(() => {
+      hoverOutTimerRef.current = null
+      setHoveredMessage((h) => (h === id ? null : h))
+    }, 250)
+  }
+  useEffect(() => () => {
+    if (hoverOutTimerRef.current) clearTimeout(hoverOutTimerRef.current)
+  }, [])
 
   const showTooltip = (label: string, sub?: string) => (e: any) => {
     // Touch screens fire mouseenter on tap but never mouseleave: the tooltip
@@ -412,6 +500,47 @@ export default function ChatScreen() {
   }, [])
   const [categories, setCategories] = useState<Category[]>([])
   const [roles, setRoles] = useState<RoleGroup[]>([])
+  // Roles of each member of the open server, cached so every roster refresh (presence polling,
+  // ban, kick, transfer) keeps the panel split by role instead of falling back to "Miembros".
+  // Refetched when someone new shows up or the cache is older than a minute.
+  const memberRolesCacheRef = useRef<{
+    serverId: string
+    byUser: Map<string, ServerRole[]>
+    defaultRoleId: string | null
+    fetchedAt: number
+  } | null>(null)
+  const memberRolesLoadingRef = useRef("")
+  const rosterServerRef = useRef("")
+  const showRoster = (serverId: string, members: ServerMember[]) => {
+    const cache = memberRolesCacheRef.current
+    const fresh = cache?.serverId === serverId ? cache : null
+    setRoles(membersToRoleGroups(members, fresh?.byUser, fresh?.defaultRoleId))
+    const missing = members.some((m) => m.role !== "owner" && !fresh?.byUser.has(m.userId))
+    const stale = !fresh || Date.now() - fresh.fetchedAt > 60_000
+    if ((missing || stale) && memberRolesLoadingRef.current !== serverId) {
+      memberRolesLoadingRef.current = serverId
+      Promise.all([
+        getDefaultRoleId(serverId).catch(() => null),
+        Promise.all(
+          members
+            .filter((m) => m.role !== "owner")
+            .map((m) =>
+              getMemberRoles(serverId, m.userId)
+                .then((r) => [m.userId, r] as const)
+                .catch(() => [m.userId, fresh?.byUser.get(m.userId) ?? ([] as ServerRole[])] as const),
+            ),
+        ),
+      ])
+        .then(([defaultRoleId, pairs]) => {
+          const byUser = new Map(pairs)
+          memberRolesCacheRef.current = { serverId, byUser, defaultRoleId, fetchedAt: Date.now() }
+          if (rosterServerRef.current === serverId) setRoles(membersToRoleGroups(members, byUser, defaultRoleId))
+        })
+        .finally(() => {
+          if (memberRolesLoadingRef.current === serverId) memberRolesLoadingRef.current = ""
+        })
+    }
+  }
   const [messages, setMessages] = useState<Message[]>([])
   // HU-6 CA1 (load older history): whether older pages may still exist, an
   // in-flight guard to drop duplicate requests, and a transient error that offers
@@ -824,9 +953,12 @@ export default function ChatScreen() {
         }
       })
     // Real roster from the backend (owner + members), hydrated with names/avatars.
+    // showRoster fills the panel right away (with the cached roles, if any) and then each
+    // member's roles (any member may read them) to split it by role.
+    rosterServerRef.current = activeServer
     getServerMembers(activeServer)
       .then((members) => {
-        if (active) setRoles(membersToRoleGroups(members))
+        if (active) showRoster(activeServer, members)
       })
       .catch(() => {
         if (active) setRoles([])
@@ -862,7 +994,7 @@ export default function ChatScreen() {
       getServerMembers(activeServer)
         .then((members) => {
           if (!active) return
-          setRoles(membersToRoleGroups(members))
+          showRoster(activeServer, members)
           setServerSuspended(activeServer, false)
         })
         .catch((err) => {
@@ -1205,7 +1337,7 @@ export default function ChatScreen() {
     }
     return (
       <View style={{ paddingVertical: 10, alignItems: "center" }}>
-        <Text style={{ color: "#5F7B7F", fontSize: 11, fontWeight: "600" }}>Inicio del canal</Text>
+        <Text style={{ color: "#7F9DA1", fontSize: 11, fontWeight: "600" }}>Inicio del canal</Text>
       </View>
     )
   }
@@ -1290,6 +1422,18 @@ export default function ChatScreen() {
   const avatarUrlById = useMemo(() => {
     const map = new Map<string, string>()
     for (const group of roles) for (const m of group.members) if (m.avatarUrl) map.set(m.id, m.avatarUrl)
+    return map
+  }, [roles])
+  // Etiqueta junto al nombre en cada mensaje: el rol más alto del autor (el grupo en el que aparece
+  // en la lista de miembros). El dueño solo se marca en la lista de miembros, no en los mensajes, y
+  // los miembros sin rol propio no llevan etiqueta.
+  const authorBadgeById = useMemo(() => {
+    const map = new Map<string, { name: string; color: string }>()
+    for (const group of roles) {
+      if (group.owner) continue
+      if (group.name === PLAIN_MEMBERS_GROUP_NAME && group.color === PLAIN_MEMBERS_COLOR) continue
+      for (const m of group.members) map.set(m.id, { name: group.name, color: group.color })
+    }
     return map
   }, [roles])
 
@@ -1900,7 +2044,7 @@ export default function ChatScreen() {
       const refreshed = await getServers()
       setServers(refreshed)
       const members = await getServerMembers(activeServer)
-      setRoles(membersToRoleGroups(members))
+      showRoster(activeServer, members)
     } catch (err) {
       setBannerError(friendlyError(err))
     } finally {
@@ -3229,7 +3373,7 @@ export default function ChatScreen() {
       await banMember(activeServer, banTarget.id, banReason)
       setBanTarget(null)
       const members = await getServerMembers(activeServer)
-      setRoles(membersToRoleGroups(members))
+      showRoster(activeServer, members)
     } catch (err) {
       setBanError(friendlyError(err))
     } finally {
@@ -3252,7 +3396,7 @@ export default function ChatScreen() {
       await kickMember(activeServer, kickTarget.id)
       setKickTarget(null)
       const members = await getServerMembers(activeServer)
-      setRoles(membersToRoleGroups(members))
+      showRoster(activeServer, members)
     } catch (err) {
       setKickError(friendlyError(err))
     } finally {
@@ -3517,14 +3661,14 @@ export default function ChatScreen() {
                       justifyContent: "center",
                       backgroundColor: "#FF7F72",
                       borderRadius: 9999,
-                      minWidth: 15,
-                      height: 15,
+                      minWidth: 17,
+                      height: 17,
                       paddingHorizontal: 4,
                       borderWidth: 2,
                       borderColor: "rgba(255,255,255,0.15)",
                     }}
                   >
-                    <Text style={{ color: "#FFFFFF", fontSize: 9, fontWeight: "800" }}>
+                    <Text style={{ color: "#FFFFFF", fontSize: 11, fontWeight: "800" }}>
                       {serverUnread(s).mentions >= 99 ? "99+" : serverUnread(s).mentions}
                     </Text>
                   </View>
@@ -3686,7 +3830,7 @@ export default function ChatScreen() {
                     </Text>
                     {opts.badge ? (
                       <View style={{ minWidth: 18, height: 18, paddingHorizontal: 5, borderRadius: 9999, alignItems: "center", justifyContent: "center", backgroundColor: "#FF7F72" }}>
-                        <Text style={{ color: "#04211D", fontSize: 10, fontWeight: "800" }}>{opts.badge > 99 ? "99+" : opts.badge}</Text>
+                        <Text style={{ color: "#04211D", fontSize: 11, fontWeight: "800" }}>{opts.badge > 99 ? "99+" : opts.badge}</Text>
                       </View>
                     ) : null}
                     {opts.checked ? <Ionicons name="checkmark" size={16} color="#37D6C0" /> : null}
@@ -3730,7 +3874,7 @@ export default function ChatScreen() {
                     <Text
                       style={{
                         color: "#8DA8AC",
-                        fontSize: 10.5,
+                        fontSize: 11,
                         fontWeight: "800",
                         letterSpacing: 0.5,
                         paddingHorizontal: 14,
@@ -3829,7 +3973,7 @@ export default function ChatScreen() {
             ) : notifItems.length === 0 ? (
               // CA2: sin actividad relevante reciente.
               <View style={{ padding: 32, alignItems: "center", gap: 8 }}>
-                <Ionicons name="notifications-off-outline" size={30} color="#5E7E82" />
+                <Ionicons name="notifications-off-outline" size={30} color="#7F9DA1" />
                 <Text style={{ color: "#E6F3F3", fontSize: 14, fontWeight: "700" }}>
                   No hay notificaciones para mostrar
                 </Text>
@@ -3869,7 +4013,7 @@ export default function ChatScreen() {
                             <Text style={{ fontWeight: "700" }}>{n.author}</Text>
                             {n.kind === "everyone" ? " mencionó a todos" : " te mencionó"}
                           </Text>
-                          <Text style={{ color: "#8DA8AC", fontSize: 10.5 }}>{timeAgo(n.createdAt)}</Text>
+                          <Text style={{ color: "#8DA8AC", fontSize: 11 }}>{timeAgo(n.createdAt)}</Text>
                           {n.unread ? (
                             <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: "#37D6C0" }} />
                           ) : null}
@@ -3963,12 +4107,12 @@ export default function ChatScreen() {
                 <Ionicons
                   name={serverLevel(prefs, activeServer) === "none" ? "notifications-off-outline" : "at-outline"}
                   size={13}
-                  color="#5E7E82"
+                  color="#7F9DA1"
                 />
               ) : null}
               {canModerate && pendingReports > 0 && !activeSuspended ? (
                 <View style={{ minWidth: 17, height: 17, paddingHorizontal: 4, borderRadius: 9999, alignItems: "center", justifyContent: "center", backgroundColor: "#FF7F72" }}>
-                  <Text style={{ color: "#04211D", fontSize: 10, fontWeight: "800" }}>{pendingReports > 99 ? "99+" : pendingReports}</Text>
+                  <Text style={{ color: "#04211D", fontSize: 11, fontWeight: "800" }}>{pendingReports > 99 ? "99+" : pendingReports}</Text>
                 </View>
               ) : null}
               <View style={{ width: 26, height: 26, borderRadius: 8, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(255,255,255,0.06)" }}>
@@ -4010,7 +4154,7 @@ export default function ChatScreen() {
             return (
             <View key={cat.id}>
               <View style={{ paddingHorizontal: 12, paddingTop: 12, paddingBottom: 4, flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
-                <Text style={{ color: "#8DA8AC", fontWeight: "700", textTransform: "uppercase", fontSize: 9.5, letterSpacing: 1.3 }}>
+                <Text style={{ color: "#8DA8AC", fontWeight: "700", textTransform: "uppercase", fontSize: 11, letterSpacing: 1.3 }}>
                   {cat.name}
                 </Text>
                 {canManageChannels ? (
@@ -4104,7 +4248,7 @@ export default function ChatScreen() {
                           : active || (cu.unread && !cu.muted)
                             ? "#E6F3F3"
                             : cu.muted
-                              ? "#5E7E82"
+                              ? "#7F9DA1"
                               : "#8DA8AC",
                         fontWeight: inCall || active || (cu.unread && !cu.muted) ? "700" : "400",
                       }}
@@ -4116,7 +4260,7 @@ export default function ChatScreen() {
                       <Ionicons
                         name={cu.muted ? "notifications-off-outline" : "at-outline"}
                         size={11}
-                        color="#5E7E82"
+                        color="#7F9DA1"
                       />
                     ) : null}
                     {canManageChannels && active ? (
@@ -4159,7 +4303,7 @@ export default function ChatScreen() {
                       // CA3: una mención sin leer se ve distinta de la actividad común (globito coral con
                       // la cantidad, en vez del punto blanco).
                       <View style={{ backgroundColor: "#FF7F72", borderRadius: 9999, paddingHorizontal: 6, paddingVertical: 1 }}>
-                        <Text style={{ color: "#FFFFFF", fontSize: 9, fontWeight: "800" }}>
+                        <Text style={{ color: "#FFFFFF", fontSize: 11, fontWeight: "800" }}>
                           {cu.mentions >= 99 ? "99+" : cu.mentions}
                         </Text>
                       </View>
@@ -4171,7 +4315,7 @@ export default function ChatScreen() {
                           width: cu.muted ? 6 : 8,
                           height: cu.muted ? 6 : 8,
                           borderRadius: 4,
-                          backgroundColor: cu.muted ? "#5E7E82" : "#E6F3F3",
+                          backgroundColor: cu.muted ? "#7F9DA1" : "#E6F3F3",
                         }}
                       />
                     ) : null}
@@ -4258,7 +4402,7 @@ export default function ChatScreen() {
                 >
                   {voice.status === "connecting" ? "Conectando..." : "Conectado a voz"}
                 </Text>
-                <Text style={{ color: "#8DA8AC", fontSize: 10 }} numberOfLines={1}>
+                <Text style={{ color: "#8DA8AC", fontSize: 11 }} numberOfLines={1}>
                   {voice.channel.name} / {voice.channel.serverName}
                 </Text>
               </View>
@@ -4531,7 +4675,7 @@ export default function ChatScreen() {
               </View>
             )
           }
-          renderItem={({ item: msg }) => {
+          renderItem={({ item: msg, index }) => {
             const authorInitials = initials(msg.author)
             // Only wire navigation when the message carries a public author id.
             // Mock messages don't, so their authors stay non-tappable for now.
@@ -4543,6 +4687,11 @@ export default function ChatScreen() {
                 ? user?.avatarUrl ?? null
                 : avatarUrlById.get(msg.authorId) ?? null
               : null
+            const authorBadge = msg.role
+              ? { name: msg.role, color: msg.roleColor ?? "#8DA8AC" }
+              : msg.authorId
+                ? authorBadgeById.get(msg.authorId)
+                : undefined
             const reportable = canReportMessage(msg)
             const mentionsMe =
               !!user?.id &&
@@ -4564,11 +4713,12 @@ export default function ChatScreen() {
               }}
               {...(Platform.OS === "web"
                 ? {
-                    onHoverIn: () => setHoveredMessage(msg.id),
-                    onHoverOut: () => setHoveredMessage((h) => (h === msg.id ? null : h)),
+                    onHoverIn: () => hoverMessageIn(msg.id),
+                    onHoverOut: () => hoverMessageOut(msg.id),
                   }
                 : {})}
               style={{
+                position: "relative",
                 flexDirection: "row",
                 gap: 10,
                 borderRadius: 8,
@@ -4601,59 +4751,15 @@ export default function ChatScreen() {
                   >
                     {msg.author}
                   </Text>
-                  {msg.role ? (
-                    <View style={{ paddingHorizontal: 6, paddingVertical: 1, borderRadius: 4, backgroundColor: `${msg.roleColor}22` }}>
-                      <Text style={{ fontSize: 9, fontWeight: "800", color: msg.roleColor, textTransform: "uppercase", letterSpacing: 0.5 }}>
-                        {msg.role}
+                  {authorBadge ? (
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 3, paddingHorizontal: 6, paddingVertical: 1, borderRadius: 4, backgroundColor: `${authorBadge.color}22` }}>
+                      <Text style={{ fontSize: 11, fontWeight: "800", color: authorBadge.color, textTransform: "uppercase", letterSpacing: 0.5 }}>
+                        {authorBadge.name}
                       </Text>
                     </View>
                   ) : null}
-                  <Text style={{ color: "#8DA8AC", fontSize: 10 }}>{msg.time}</Text>
-                  {msg.edited ? <Text style={{ color: "#8DA8AC", fontSize: 9.5 }}>(editado)</Text> : null}
-                  {Platform.OS === "web" && !isNarrow && !isEditing && (editable || deletable) ? (
-                    <View
-                      style={{
-                        marginLeft: "auto",
-                        flexDirection: "row",
-                        gap: 4,
-                        opacity: showActions ? 1 : 0,
-                      }}
-                    >
-                      {editable ? (
-                        <PressableScale
-                          onPress={() => startEditMessage(msg)}
-                          accessibilityLabel="Editar mensaje"
-                          hoverStyle={{ backgroundColor: "rgba(55,214,192,0.16)" }}
-                          style={{ flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6 }}
-                        >
-                          <Ionicons name="create-outline" size={11} color="#8DE9DC" />
-                          <Text style={{ color: "#8DE9DC", fontSize: 10.5, fontWeight: "700" }}>Editar</Text>
-                        </PressableScale>
-                      ) : null}
-                      {deletable ? (
-                        <PressableScale
-                          onPress={() => askDeleteMessage(msg)}
-                          accessibilityLabel="Eliminar mensaje"
-                          hoverStyle={{ backgroundColor: "rgba(255,127,114,0.18)" }}
-                          style={{ flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6 }}
-                        >
-                          <Ionicons name="trash-outline" size={11} color="#FF9E94" />
-                          <Text style={{ color: "#FF9E94", fontSize: 10.5, fontWeight: "700" }}>Eliminar</Text>
-                        </PressableScale>
-                      ) : null}
-                    </View>
-                  ) : null}
-                  {showReport ? (
-                    <PressableScale
-                      onPress={() => reportMessage(msg)}
-                      accessibilityLabel="Reportar mensaje"
-                      hoverStyle={{ backgroundColor: "rgba(255,127,114,0.18)" }}
-                      style={{ marginLeft: editable || deletable ? 0 : "auto", flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6, opacity: hoveredMessage === msg.id ? 1 : 0 }}
-                    >
-                      <Ionicons name="flag-outline" size={11} color="#FF9E94" />
-                      <Text style={{ color: "#FF9E94", fontSize: 10.5, fontWeight: "700" }}>Reportar</Text>
-                    </PressableScale>
-                  ) : null}
+                  <Text style={{ color: "#8DA8AC", fontSize: 11 }}>{msg.time}</Text>
+                  {msg.edited ? <Text style={{ color: "#8DA8AC", fontSize: 11 }}>(editado)</Text> : null}
                 </View>
                 {isEditing ? (
                   <View style={{ marginTop: 4, gap: 6 }}>
@@ -4713,7 +4819,7 @@ export default function ChatScreen() {
                         )}
                       </PressableScale>
                       {Platform.OS === "web" ? (
-                        <Text style={{ color: "#8DA8AC", fontSize: 10 }}>Enter para guardar · Esc para cancelar</Text>
+                        <Text style={{ color: "#8DA8AC", fontSize: 11 }}>Enter para guardar · Esc para cancelar</Text>
                       ) : null}
                     </View>
                   </View>
@@ -4743,9 +4849,9 @@ export default function ChatScreen() {
                           backgroundColor: r.mine ? "rgba(55,214,192,0.17)" : "rgba(255,255,255,0.10)",
                         }}
                       >
-                        <Text style={{ fontSize: 10 }}>{r.emoji} </Text>
+                        <Text style={{ fontSize: 11 }}>{r.emoji} </Text>
                         <Text
-                          style={{ fontSize: 10, fontWeight: "700", color: r.mine ? "#37D6C0" : "#8DA8AC" }}
+                          style={{ fontSize: 11, fontWeight: "700", color: r.mine ? "#37D6C0" : "#8DA8AC" }}
                         >
                           {r.count}
                         </Text>
@@ -4754,11 +4860,97 @@ export default function ChatScreen() {
                   </View>
                 ) : null}
               </View>
+              {Platform.OS === "web" && !isNarrow && !isEditing && (editable || deletable || showReport) ? (
+                // Barra de acciones flotante arriba a la derecha (estilo Discord): siempre en el mismo
+                // lugar sin importar el largo del renglón, con botones grandes y su propio hover para
+                // que no se esconda mientras el mouse está encima.
+                <View
+                  {...({
+                    onPointerEnter: () => hoverMessageIn(msg.id),
+                    onPointerLeave: () => hoverMessageOut(msg.id),
+                  } as object)}
+                  pointerEvents={showActions ? "auto" : "none"}
+                  style={{
+                    position: "absolute",
+                    top: -16,
+                    right: 8,
+                    zIndex: 10,
+                    flexDirection: "row",
+                    gap: 2,
+                    padding: 3,
+                    borderRadius: 9,
+                    borderWidth: 1,
+                    borderColor: "#1B2630",
+                    backgroundColor: "#0F1D28",
+                    opacity: showActions ? 1 : 0,
+                    shadowColor: "#000",
+                    shadowOpacity: 0.35,
+                    shadowRadius: 10,
+                    shadowOffset: { width: 0, height: 4 },
+                  }}
+                >
+                  {editable ? (
+                    <PressableScale
+                      onPress={() => startEditMessage(msg)}
+                      accessibilityLabel="Editar mensaje"
+                      hoverStyle={{ backgroundColor: "rgba(55,214,192,0.16)" }}
+                      style={{ flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 7 }}
+                    >
+                      <Ionicons name="create-outline" size={14} color="#8DE9DC" />
+                      <Text style={{ color: "#8DE9DC", fontSize: 12, fontWeight: "700" }}>Editar</Text>
+                    </PressableScale>
+                  ) : null}
+                  {deletable ? (
+                    <PressableScale
+                      onPress={() => askDeleteMessage(msg)}
+                      accessibilityLabel="Eliminar mensaje"
+                      hoverStyle={{ backgroundColor: "rgba(255,127,114,0.18)" }}
+                      style={{ flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 7 }}
+                    >
+                      <Ionicons name="trash-outline" size={14} color="#FF9E94" />
+                      <Text style={{ color: "#FF9E94", fontSize: 12, fontWeight: "700" }}>Eliminar</Text>
+                    </PressableScale>
+                  ) : null}
+                  {showReport ? (
+                    <PressableScale
+                      onPress={() => reportMessage(msg)}
+                      accessibilityLabel="Reportar mensaje"
+                      hoverStyle={{ backgroundColor: "rgba(255,127,114,0.18)" }}
+                      style={{ flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 7 }}
+                    >
+                      <Ionicons name="flag-outline" size={14} color="#FF9E94" />
+                      <Text style={{ color: "#FF9E94", fontSize: 12, fontWeight: "700" }}>Reportar</Text>
+                    </PressableScale>
+                  ) : null}
+                </View>
+              ) : null}
             </Pressable>
             )
-            if (unreadDivider?.messageId !== msg.id) return row
+            const dayLabel =daySeparatorLabel(msg, index > 0 ? messages[index - 1] : undefined)
+            const daySeparator = dayLabel ? (
+              // Título del día: línea gris con la fecha al centro, antes del primer mensaje de cada día.
+              <View
+                accessibilityRole="header"
+                accessibilityLabel={dayLabel}
+                style={{ flexDirection: "row", alignItems: "center", gap: 10, marginTop: index > 0 ? 6 : 0, marginBottom: 13 }}
+              >
+                <View style={{ flex: 1, height: 1, backgroundColor: "#1B2630" }} />
+                <Text style={{ color: "#8DA8AC", fontSize: 11.5, fontWeight: "600" }}>{dayLabel}</Text>
+                <View style={{ flex: 1, height: 1, backgroundColor: "#1B2630" }} />
+              </View>
+            ) : null
+            if (unreadDivider?.messageId !== msg.id) {
+              if (!daySeparator) return row
+              return (
+                <View>
+                  {daySeparator}
+                  {row}
+                </View>
+              )
+            }
             return (
               <View>
+                {daySeparator}
                 {/* Línea "Mensajes no leídos": desde acá hacia abajo, lo que no se había visto. */}
                 <View
                   accessibilityRole="header"
@@ -4766,7 +4958,7 @@ export default function ChatScreen() {
                   style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 10 }}
                 >
                   <View style={{ flex: 1, height: 1, backgroundColor: "rgba(255,107,107,0.55)" }} />
-                  <Text style={{ color: "#FF8A80", fontSize: 10.5, fontWeight: "800", letterSpacing: 0.4 }}>
+                  <Text style={{ color: "#FF8A80", fontSize: 11, fontWeight: "800", letterSpacing: 0.4 }}>
                     {unreadDivider.count} {unreadDivider.count === 1 ? "MENSAJE NO LEÍDO" : "MENSAJES NO LEÍDOS"}
                   </Text>
                   <View style={{ flex: 1, height: 1, backgroundColor: "rgba(255,107,107,0.55)" }} />
@@ -4780,7 +4972,7 @@ export default function ChatScreen() {
         {/* Typing indicator: demo, shown only in the example server's #anuncios */}
         <View style={{ paddingHorizontal: 16, paddingBottom: 4, minHeight: 18 }}>
           {activeChannel === "anuncios" ? (
-            <Text style={{ color: "#8DA8AC", fontSize: 10.5 }}>Mora está escribiendo…</Text>
+            <Text style={{ color: "#8DA8AC", fontSize: 11 }}>Mora está escribiendo…</Text>
           ) : null}
         </View>
 
@@ -4840,7 +5032,7 @@ export default function ChatScreen() {
                   <Text style={{ color: "#E6F3F3", fontSize: 12, flexShrink: 1 }} numberOfLines={1}>
                     {sg.label}
                   </Text>
-                  <Text style={{ color: "#8DA8AC", fontSize: 10.5 }}>
+                  <Text style={{ color: "#8DA8AC", fontSize: 11 }}>
                     {sg.kind === "everyone" ? "Avisa a todo el canal" : sg.kind === "role" ? "Rol" : ""}
                   </Text>
                 </Pressable>
@@ -4870,7 +5062,7 @@ export default function ChatScreen() {
               onKeyPress={handleComposerKeyPress}
               editable={!sendDisabled}
               placeholder={sendDisabled ? sendDisabledMessage : `Escribí en #${channel?.name ?? ""}`}
-              placeholderTextColor="#5E7E82"
+              placeholderTextColor="#7F9DA1"
               style={{ flex: 1, color: "#E6F3F3", fontSize: 12, opacity: sendDisabled ? 0.5 : 1 }}
               onSubmitEditing={() =>
                 mentionSuggestions.length > 0 ? applySuggestion(mentionSuggestions[selectedSuggestion]) : handleSend()
@@ -4903,7 +5095,7 @@ export default function ChatScreen() {
                 gap: 8,
               }}
             >
-              <Text style={{ color: sendDisabled || messageTooLong ? "#FF9B8A" : "#8DA8AC", fontSize: 10.5, flexShrink: 1 }}>
+              <Text style={{ color: sendDisabled || messageTooLong ? "#FF9B8A" : "#8DA8AC", fontSize: 11, flexShrink: 1 }}>
                 {sendDisabled
                   ? sendDisabledMessage
                   : messageTooLong
@@ -4911,7 +5103,7 @@ export default function ChatScreen() {
                     : ""}
               </Text>
               {!sendDisabled && messageLength >= MESSAGE_COUNTER_FROM ? (
-                <Text style={{ color: messageTooLong ? "#FF6B6B" : "#8DA8AC", fontSize: 10.5 }}>
+                <Text style={{ color: messageTooLong ? "#FF6B6B" : "#8DA8AC", fontSize: 11 }}>
                   {messageLength}/{MESSAGE_MAX}
                 </Text>
               ) : null}
@@ -4985,7 +5177,7 @@ export default function ChatScreen() {
 
           {roles.length === 0 ? (
             <View style={{ alignItems: "center", paddingHorizontal: 20, paddingTop: 44, gap: 8 }}>
-              <Ionicons name="people-outline" size={30} color="#5E7E82" />
+              <Ionicons name="people-outline" size={30} color="#7F9DA1" />
               <Text style={{ color: "#E6F3F3", fontSize: 13, fontWeight: "600", textAlign: "center" }}>
                 Todavía no hay miembros
               </Text>
@@ -4998,11 +5190,15 @@ export default function ChatScreen() {
               {roles.map((role) => (
                 <View key={role.name} style={{ marginTop: 14 }}>
                   <View style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 6, marginBottom: 4 }}>
-                    <View style={{ width: 7, height: 7, borderRadius: 9999, backgroundColor: role.color }} />
-                    <Text style={{ color: "#8DA8AC", fontWeight: "700", textTransform: "uppercase", fontSize: 9.5, letterSpacing: 1.1 }}>
+                    {role.owner ? (
+                      <Ionicons name="star" size={10} color={role.color} />
+                    ) : (
+                      <View style={{ width: 7, height: 7, borderRadius: 9999, backgroundColor: role.color }} />
+                    )}
+                    <Text style={{ color: role.owner ? role.color : "#8DA8AC", fontWeight: "700", textTransform: "uppercase", fontSize: 11, letterSpacing: 1.1 }}>
                       {role.name}
                     </Text>
-                    <Text style={{ color: "#5E7E82", fontSize: 9.5, fontWeight: "700", marginLeft: "auto" }}>
+                    <Text style={{ color: "#7F9DA1", fontSize: 11, fontWeight: "700", marginLeft: "auto" }}>
                       {role.members.length}
                     </Text>
                   </View>
@@ -5036,11 +5232,26 @@ export default function ChatScreen() {
                           <StatusDot status={m.status} />
                         </View>
                         <View style={{ flex: 1, minWidth: 0 }}>
-                          <Text style={{ color: nameColor, fontWeight: "600", fontSize: 12.5 }} numberOfLines={1}>
-                            {m.name}
-                          </Text>
+                          <View style={{ flexDirection: "row", alignItems: "center", gap: 5, minWidth: 0 }}>
+                            <Text style={{ color: nameColor, fontWeight: "600", fontSize: 12.5, flexShrink: 1 }} numberOfLines={1}>
+                              {m.name}
+                            </Text>
+                            {role.owner ? (
+                              <Ionicons name="star" size={11} color={OWNER_COLOR} accessibilityLabel="Dueño del servidor" />
+                            ) : null}
+                            {(m.extraRoles ?? []).map((extra) => (
+                              <View
+                                key={extra}
+                                style={{ paddingHorizontal: 5, paddingVertical: 1, borderRadius: 4, backgroundColor: "rgba(255,255,255,0.06)" }}
+                              >
+                                <Text style={{ color: "#8DA8AC", fontSize: 9.5, fontWeight: "700" }} numberOfLines={1}>
+                                  {extra}
+                                </Text>
+                              </View>
+                            ))}
+                          </View>
                           {/* HU-5 de perfil: el estado personalizado reemplaza la etiqueta de presencia. */}
-                          <Text style={{ color: "#8DA8AC", fontSize: 10 }} numberOfLines={1}>
+                          <Text style={{ color: "#8DA8AC", fontSize: 11 }} numberOfLines={1}>
                             {m.customStatus || STATUS_LABELS[m.status]}
                           </Text>
                         </View>
@@ -5118,12 +5329,12 @@ export default function ChatScreen() {
               value={serverName}
               onChangeText={setServerName}
               placeholder="Ej: FIUBA · IS2"
-              placeholderTextColor="#5E7E82"
+              placeholderTextColor="#7F9DA1"
               style={[FIELD, { marginBottom: 6 }]}
             />
             <Text
               style={{
-                color: serverName.trim().length > SERVER_NAME_MAX ? "#FF9E94" : "#5E7E82",
+                color: serverName.trim().length > SERVER_NAME_MAX ? "#FF9E94" : "#7F9DA1",
                 fontSize: 11,
                 textAlign: "right",
                 marginBottom: 16,
@@ -5156,7 +5367,7 @@ export default function ChatScreen() {
                 <Text style={{ color: "#E6F3F3", fontSize: 12.5, fontWeight: "600" }} numberOfLines={1}>
                   {iconLabel || "Subir una imagen"}
                 </Text>
-                <Text style={{ color: "#5E7E82", fontSize: 10.5 }}>Opcional · PNG o JPG</Text>
+                <Text style={{ color: "#7F9DA1", fontSize: 11 }}>Opcional · PNG o JPG</Text>
               </View>
               {iconLabel ? (
                 <TouchableOpacity
@@ -5198,7 +5409,7 @@ export default function ChatScreen() {
               value={joinInput}
               onChangeText={setJoinInput}
               placeholder="Ej: discordia.app/invite/abc123"
-              placeholderTextColor="#5E7E82"
+              placeholderTextColor="#7F9DA1"
               autoCapitalize="none"
               style={[FIELD, { marginBottom: 18 }]}
             />
@@ -5349,7 +5560,7 @@ export default function ChatScreen() {
                       <Text style={{ color: "#E6F3F3", fontSize: 12.5, fontWeight: "700" }} numberOfLines={1}>
                         {inv.code}
                       </Text>
-                      <Text style={{ color: "#8DA8AC", fontSize: 10.5 }} numberOfLines={1}>
+                      <Text style={{ color: "#8DA8AC", fontSize: 11 }} numberOfLines={1}>
                         {`${formatInviteUses(inv)} · ${formatInviteExpiry(inv.expiresAt)}`}
                       </Text>
                     </View>
@@ -5525,7 +5736,7 @@ export default function ChatScreen() {
           value={editChName}
           onChangeText={setEditChName}
           placeholder="nombre-del-canal"
-          placeholderTextColor="#5E7E82"
+          placeholderTextColor="#7F9DA1"
           maxLength={100}
           autoCapitalize="none"
           style={[FIELD, { marginBottom: 14 }]}
@@ -5536,7 +5747,7 @@ export default function ChatScreen() {
           value={editChTopic}
           onChangeText={setEditChTopic}
           placeholder="¿De qué se habla en este canal?"
-          placeholderTextColor="#5E7E82"
+          placeholderTextColor="#7F9DA1"
           maxLength={256}
           autoCapitalize="none"
           style={[FIELD, { marginBottom: 14 }]}
@@ -5636,7 +5847,7 @@ export default function ChatScreen() {
           value={createChName}
           onChangeText={setCreateChName}
           placeholder="nombre-del-canal"
-          placeholderTextColor="#5E7E82"
+          placeholderTextColor="#7F9DA1"
           maxLength={100}
           autoCapitalize="none"
           style={[FIELD, { marginBottom: 14 }]}
@@ -6062,7 +6273,7 @@ export default function ChatScreen() {
           value={transferConfirmName}
           onChangeText={setTransferConfirmName}
           placeholder={activeServerName}
-          placeholderTextColor="#5E7E82"
+          placeholderTextColor="#7F9DA1"
           autoCapitalize="none"
           style={[FIELD, { marginBottom: 18 }]}
         />
@@ -6128,7 +6339,7 @@ export default function ChatScreen() {
           value={muteReason}
           onChangeText={setMuteReason}
           placeholder="Por ejemplo: spam"
-          placeholderTextColor="#5E7E82"
+          placeholderTextColor="#7F9DA1"
           maxLength={500}
           style={[FIELD, { marginBottom: 18 }]}
         />
@@ -6252,7 +6463,7 @@ export default function ChatScreen() {
           value={banReason}
           onChangeText={setBanReason}
           placeholder="Por ejemplo: spam"
-          placeholderTextColor="#5E7E82"
+          placeholderTextColor="#7F9DA1"
           maxLength={500}
           style={[FIELD, { marginBottom: 18 }]}
         />
@@ -6382,7 +6593,7 @@ export default function ChatScreen() {
           value={catCreateName}
           onChangeText={setCatCreateName}
           placeholder="nombre-de-categoría"
-          placeholderTextColor="#5E7E82"
+          placeholderTextColor="#7F9DA1"
           maxLength={100}
           autoCapitalize="none"
           style={[FIELD, { marginBottom: 18 }]}
@@ -6429,7 +6640,7 @@ export default function ChatScreen() {
           value={catEditName}
           onChangeText={setCatEditName}
           placeholder="nombre-de-categoría"
-          placeholderTextColor="#5E7E82"
+          placeholderTextColor="#7F9DA1"
           maxLength={100}
           autoCapitalize="none"
           style={[FIELD, { marginBottom: 18 }]}

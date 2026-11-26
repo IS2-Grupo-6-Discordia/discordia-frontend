@@ -237,7 +237,7 @@ export default function GoogleAccount() {
                   {link.linked ? link.email : "Ninguna cuenta de Google"}
                 </Text>
                 {link.linked && link.linkedAt ? (
-                  <Text style={{ color: "#5E7E82", fontSize: 12, marginTop: 2 }}>Desde el {formatDate(link.linkedAt)}</Text>
+                  <Text style={{ color: "#7F9DA1", fontSize: 12, marginTop: 2 }}>Desde el {formatDate(link.linkedAt)}</Text>
                 ) : null}
               </View>
             </View>
@@ -263,7 +263,7 @@ export default function GoogleAccount() {
                     >
                       <Text style={{ color: "#FF9E94", fontWeight: "700", fontSize: 14 }}>Desvincular</Text>
                     </TouchableOpacity>
-                    <Text style={{ color: "#5E7E82", fontSize: 12, lineHeight: 17, marginTop: 10 }}>
+                    <Text style={{ color: "#7F9DA1", fontSize: 12, lineHeight: 17, marginTop: 10 }}>
                       Para usar otra cuenta de Google, desvinculá esta y después vinculá la nueva.
                     </Text>
                   </>

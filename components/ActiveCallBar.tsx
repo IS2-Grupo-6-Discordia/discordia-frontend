@@ -34,12 +34,8 @@ export default function ActiveCallBar() {
     : `${voice.channel?.name ?? ""} / ${voice.channel?.serverName ?? ""}`
 
   const hangUp = () => {
-    if (inPrivateCall) {
-      if (voice.callStatus === "ringing") voice.rejectIncomingCall()
-      else voice.endCurrentCall()
-    } else {
-      voice.leave()
-    }
+    if (inPrivateCall) voice.hangUpCall()
+    else voice.leave()
   }
 
   return (

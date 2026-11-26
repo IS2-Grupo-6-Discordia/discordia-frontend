@@ -193,12 +193,16 @@ export interface Member {
   color: string
   status: PresenceStatus
   customStatus?: string | null
+  // Other server roles the member holds besides the one their group shows.
+  extraRoles?: string[]
 }
 
 export interface RoleGroup {
   name: string
   color: string
   members: Member[]
+  // The server owner's group: the member panel marks it with a crown.
+  owner?: boolean
 }
 
 export interface Message {
@@ -282,13 +286,15 @@ export interface UnreadSummary {
 export interface CallIncoming {
   type: "call.incoming"
   call_id: string
-  caller_id: string
+  // The caller (the backend sends the other party as peer_id).
+  peer_id: string
   peer_name?: string
 }
 
 export interface CallAccepted {
   type: "call.accepted"
   call_id: string
+  peer_id: string
   url: string
   token: string
 }
