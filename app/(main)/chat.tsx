@@ -500,6 +500,47 @@ export default function ChatScreen() {
   }, [])
   const [categories, setCategories] = useState<Category[]>([])
   const [roles, setRoles] = useState<RoleGroup[]>([])
+  // Roles of each member of the open server, cached so every roster refresh (presence polling,
+  // ban, kick, transfer) keeps the panel split by role instead of falling back to "Miembros".
+  // Refetched when someone new shows up or the cache is older than a minute.
+  const memberRolesCacheRef = useRef<{
+    serverId: string
+    byUser: Map<string, ServerRole[]>
+    defaultRoleId: string | null
+    fetchedAt: number
+  } | null>(null)
+  const memberRolesLoadingRef = useRef("")
+  const rosterServerRef = useRef("")
+  const showRoster = (serverId: string, members: ServerMember[]) => {
+    const cache = memberRolesCacheRef.current
+    const fresh = cache?.serverId === serverId ? cache : null
+    setRoles(membersToRoleGroups(members, fresh?.byUser, fresh?.defaultRoleId))
+    const missing = members.some((m) => m.role !== "owner" && !fresh?.byUser.has(m.userId))
+    const stale = !fresh || Date.now() - fresh.fetchedAt > 60_000
+    if ((missing || stale) && memberRolesLoadingRef.current !== serverId) {
+      memberRolesLoadingRef.current = serverId
+      Promise.all([
+        getDefaultRoleId(serverId).catch(() => null),
+        Promise.all(
+          members
+            .filter((m) => m.role !== "owner")
+            .map((m) =>
+              getMemberRoles(serverId, m.userId)
+                .then((r) => [m.userId, r] as const)
+                .catch(() => [m.userId, fresh?.byUser.get(m.userId) ?? ([] as ServerRole[])] as const),
+            ),
+        ),
+      ])
+        .then(([defaultRoleId, pairs]) => {
+          const byUser = new Map(pairs)
+          memberRolesCacheRef.current = { serverId, byUser, defaultRoleId, fetchedAt: Date.now() }
+          if (rosterServerRef.current === serverId) setRoles(membersToRoleGroups(members, byUser, defaultRoleId))
+        })
+        .finally(() => {
+          if (memberRolesLoadingRef.current === serverId) memberRolesLoadingRef.current = ""
+        })
+    }
+  }
   const [messages, setMessages] = useState<Message[]>([])
   // HU-6 CA1 (load older history): whether older pages may still exist, an
   // in-flight guard to drop duplicate requests, and a transient error that offers
@@ -912,27 +953,12 @@ export default function ChatScreen() {
         }
       })
     // Real roster from the backend (owner + members), hydrated with names/avatars.
-    // First the plain roster (owner / members) so the panel fills right away, then each member's
-    // roles (any member may read them) to split it by role.
-    const rosterServer = activeServer
-    getServerMembers(rosterServer)
+    // showRoster fills the panel right away (with the cached roles, if any) and then each
+    // member's roles (any member may read them) to split it by role.
+    rosterServerRef.current = activeServer
+    getServerMembers(activeServer)
       .then((members) => {
-        if (!active) return
-        setRoles(membersToRoleGroups(members))
-        return Promise.all([
-          getDefaultRoleId(rosterServer).catch(() => null),
-          Promise.all(
-            members
-              .filter((m) => m.role !== "owner")
-              .map((m) =>
-                getMemberRoles(rosterServer, m.userId)
-                  .then((r) => [m.userId, r] as const)
-                  .catch(() => [m.userId, [] as ServerRole[]] as const),
-              ),
-          ),
-        ]).then(([defaultRoleId, pairs]) => {
-          if (active) setRoles(membersToRoleGroups(members, new Map(pairs), defaultRoleId))
-        })
+        if (active) showRoster(activeServer, members)
       })
       .catch(() => {
         if (active) setRoles([])
@@ -968,7 +994,7 @@ export default function ChatScreen() {
       getServerMembers(activeServer)
         .then((members) => {
           if (!active) return
-          setRoles(membersToRoleGroups(members))
+          showRoster(activeServer, members)
           setServerSuspended(activeServer, false)
         })
         .catch((err) => {
@@ -2018,7 +2044,7 @@ export default function ChatScreen() {
       const refreshed = await getServers()
       setServers(refreshed)
       const members = await getServerMembers(activeServer)
-      setRoles(membersToRoleGroups(members))
+      showRoster(activeServer, members)
     } catch (err) {
       setBannerError(friendlyError(err))
     } finally {
@@ -3347,7 +3373,7 @@ export default function ChatScreen() {
       await banMember(activeServer, banTarget.id, banReason)
       setBanTarget(null)
       const members = await getServerMembers(activeServer)
-      setRoles(membersToRoleGroups(members))
+      showRoster(activeServer, members)
     } catch (err) {
       setBanError(friendlyError(err))
     } finally {
@@ -3370,7 +3396,7 @@ export default function ChatScreen() {
       await kickMember(activeServer, kickTarget.id)
       setKickTarget(null)
       const members = await getServerMembers(activeServer)
-      setRoles(membersToRoleGroups(members))
+      showRoster(activeServer, members)
     } catch (err) {
       setKickError(friendlyError(err))
     } finally {
