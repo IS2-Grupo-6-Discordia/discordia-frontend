@@ -364,6 +364,34 @@ function useKeyboardOverlap(ref: React.RefObject<View | null>) {
   return overlap
 }
 
+const WEEKDAYS = ["domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"]
+const MONTHS = [
+  "enero", "febrero", "marzo", "abril", "mayo", "junio",
+  "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
+]
+
+// Separador por día de la lista de mensajes: devuelve el título del día ("Hoy", "Ayer" o
+// "lunes 24 de noviembre", con el año si no es el actual) cuando `msg` es el primero de su día
+// local, o null si sigue el mismo día que `prev`. Los mensajes sin `createdAt` no cortan el día.
+// Se arma a mano en vez de con toLocaleDateString para no depender del Intl de Hermes.
+function daySeparatorLabel(msg: Message, prev: Message | undefined): string | null {
+  if (!msg.createdAt) return null
+  const day = new Date(msg.createdAt)
+  if (Number.isNaN(day.getTime())) return null
+  const sameDay = (a: Date, b: Date) =>
+    a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate()
+  if (prev?.createdAt) {
+    const prevDay = new Date(prev.createdAt)
+    if (!Number.isNaN(prevDay.getTime()) && sameDay(day, prevDay)) return null
+  }
+  const today = new Date()
+  const yesterday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1)
+  if (sameDay(day, today)) return "Hoy"
+  if (sameDay(day, yesterday)) return "Ayer"
+  const year = day.getFullYear() !== today.getFullYear() ? ` de ${day.getFullYear()}` : ""
+  return `${WEEKDAYS[day.getDay()]} ${day.getDate()} de ${MONTHS[day.getMonth()]}${year}`
+}
+
 export default function ChatScreen() {
   const rootRef = useRef<View>(null)
   const keyboardOverlap = useKeyboardOverlap(rootRef)
@@ -4531,7 +4559,7 @@ export default function ChatScreen() {
               </View>
             )
           }
-          renderItem={({ item: msg }) => {
+          renderItem={({ item: msg, index }) => {
             const authorInitials = initials(msg.author)
             // Only wire navigation when the message carries a public author id.
             // Mock messages don't, so their authors stay non-tappable for now.
@@ -4756,9 +4784,31 @@ export default function ChatScreen() {
               </View>
             </Pressable>
             )
-            if (unreadDivider?.messageId !== msg.id) return row
+            const dayLabel = daySeparatorLabel(msg, index > 0 ? messages[index - 1] : undefined)
+            const daySeparator = dayLabel ? (
+              // Título del día: línea gris con la fecha al centro, antes del primer mensaje de cada día.
+              <View
+                accessibilityRole="header"
+                accessibilityLabel={dayLabel}
+                style={{ flexDirection: "row", alignItems: "center", gap: 10, marginTop: index > 0 ? 6 : 0, marginBottom: 13 }}
+              >
+                <View style={{ flex: 1, height: 1, backgroundColor: "#1B2630" }} />
+                <Text style={{ color: "#8DA8AC", fontSize: 11.5, fontWeight: "600" }}>{dayLabel}</Text>
+                <View style={{ flex: 1, height: 1, backgroundColor: "#1B2630" }} />
+              </View>
+            ) : null
+            if (unreadDivider?.messageId !== msg.id) {
+              if (!daySeparator) return row
+              return (
+                <View>
+                  {daySeparator}
+                  {row}
+                </View>
+              )
+            }
             return (
               <View>
+                {daySeparator}
                 {/* Línea "Mensajes no leídos": desde acá hacia abajo, lo que no se había visto. */}
                 <View
                   accessibilityRole="header"
